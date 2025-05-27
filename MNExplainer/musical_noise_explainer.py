@@ -88,7 +88,7 @@ class MNExplainer(ExplainerAlgorithm):
 
         torch.manual_seed(0)
 
-    def forward(self, graph, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, **kwargs): 
+    def forward(self, graph, desired_classification, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, **kwargs): 
         explanations = [graph]
         device = graph.x_dict['note'].device
         self.mnmodel.to(device)
@@ -134,7 +134,7 @@ class MNExplainer(ExplainerAlgorithm):
 
         if isinstance(num_expl, int):
             for _ in tqdm(range(1,num_expl + 1)):
-                self._train(self.mnmodel, self.model, graph, computation_notes, target=target, **kwargs)
+                self._train(self.mnmodel, self.model, graph, computation_notes, desired_classification, target=target, **kwargs)
                 noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     graph.x_dict,
                     graph.edge_index_dict,
@@ -169,7 +169,7 @@ class MNExplainer(ExplainerAlgorithm):
                 # print(model(explanations[0].x_dict, explanations[0].edge_index_dict, **kwargs).argmax(dim=1)[target])
         else:
             for _, operation in tqdm(enumerate(num_expl)):
-                self._train(self.mnmodel, self.model, graph, computation_notes, target=target, operation=operation, **kwargs)
+                self._train(self.mnmodel, self.model, graph, computation_notes, desired_classification, target=target, operation=operation, **kwargs)
                 noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     graph.x_dict,
                     graph.edge_index_dict,
@@ -205,7 +205,7 @@ class MNExplainer(ExplainerAlgorithm):
         
         return explanations
     
-    def _train(self, mnmodel, model, graph, computation_notes, target=None, operation='random', **kwargs):
+    def _train(self, mnmodel, model, graph, computation_notes, desired_classification, target=None, operation='random', **kwargs):
 
         optimizer = torch.optim.Adam(mnmodel.parameters(), lr=self.lr, weight_decay=0.0005)
         device = graph.x_dict['note'].device
@@ -252,12 +252,28 @@ class MNExplainer(ExplainerAlgorithm):
             """
             pred = model(noisy_x_dict, noisy_edge_index_dict, **kwargs)
             original_pred = model(graph.x_dict, graph.edge_index_dict, **kwargs)
-            loss = self._loss(pred, original_pred, target)
+            loss = self._loss(pred, original_pred, target, desired_classification)
             # print(f'Loss : {loss}')
             loss.backward()
             optimizer.step()
+
+    def _dist_from_change_naive(self, change : Change_, graph):
+        match change.operation:
+            case 'add':
+                return 1
+            case 'remove':
+                return 1
+            case 'onset':
+                return 0
+            case 'duration':
+                return 0
+            case 'pitch':
+                index=change.note_index
+                new_pitch=change.pitch
+                prev_pitch=graph['note']
+        return 0
     
-    def _loss(self, pred, original_pred, target):
+    def _loss(self, pred, original_pred, target, desired_classification):
 
         # counter_classification = torch.argmax(pred) # looses the grad, argmax not being differentiable 
         # original_classification = torch.argmax(original_pred)
@@ -270,12 +286,7 @@ class MNExplainer(ExplainerAlgorithm):
 
         ent = torch.nn.CrossEntropyLoss()
         desired_pred = pred.argmax(dim=1)
-        if torch.argmax(original_pred[target]) == 0:
-            # we want to predict a cadence for counterfactual, let's say a PAC
-            desired_pred[target] = 1
-        else:
-            # if there is a cadence, let's say we want no cadence to be predicted rather than changing its type.
-            desired_pred[target] = 0
+        desired_pred[target] = desired_classification
         # we apply a mask so only the prediction for the target is taken into account
         target_mask = torch.tensor([i == target for i in range(len(desired_pred))])
 
