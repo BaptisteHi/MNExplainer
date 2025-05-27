@@ -2,6 +2,7 @@ import json
 import torch
 import graphmuse as gm
 import numpy as np
+import struttura as st
 from pathlib import Path
 
 
@@ -90,7 +91,7 @@ def create_graph_for_score(score, include_cadence=False, include_id=False, inclu
     """
     features, f_names = gm.utils.get_score_features(score)
     note_array = score.note_array(include_time_signature=True, include_metrical_position=True, include_pitch_spelling=True)
-    cad_features, cad_f_names = str.descriptors.utils.cadence_features.get_cad_features(score[-1], note_array)
+    cad_features, cad_f_names = st.descriptors.utils.cadence_features.get_cad_features(score[-1], note_array)
     complete_features = np.concatenate((features, cad_features), axis=1)
     complete_features_names = f_names + cad_f_names
     graph = gm.create_score_graph(complete_features, score.note_array(), add_beats=True)

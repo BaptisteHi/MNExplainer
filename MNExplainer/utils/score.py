@@ -1,6 +1,6 @@
 import partitura.score as scr
 import partitura as pt
-from graph import save_pyg_graph_as_json, create_graph_for_score
+from utils.graph import save_pyg_graph_as_json, create_graph_for_score
 
 
 def _spelling_from_midi_pitch(pitch):
