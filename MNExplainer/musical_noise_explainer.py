@@ -213,7 +213,7 @@ class MNExplainer(ExplainerAlgorithm):
         for _ in tqdm(range(1, self.epochs + 1)):
             mnmodel.train()
             optimizer.zero_grad()
-            noisy_x_dict, noisy_edge_index_dict, _, _, _, _ = self.mnmodel(
+            noisy_x_dict, noisy_edge_index_dict, _, _, _, change = self.mnmodel(
                     graph.x_dict,
                     graph.edge_index_dict,
                     graph['note'].ts_beats,
@@ -252,48 +252,45 @@ class MNExplainer(ExplainerAlgorithm):
             """
             pred = model(noisy_x_dict, noisy_edge_index_dict, **kwargs)
             original_pred = model(graph.x_dict, graph.edge_index_dict, **kwargs)
-            loss = self._loss(pred, original_pred, target, desired_classification)
+            loss = self._loss(change, pred, original_pred, graph, target, desired_classification)
             # print(f'Loss : {loss}')
             loss.backward()
             optimizer.step()
 
     def _dist_from_change_naive(self, change : Change_, graph):
+        # naive distance : each change of a note property is 2 because it could be made by removing and re-adding a modified version of a note
         match change.operation:
             case 'add':
                 return 1
             case 'remove':
                 return 1
             case 'onset':
-                return 0
+                return 2
             case 'duration':
-                return 0
+                return 2
             case 'pitch':
-                index=change.note_index
-                new_pitch=change.pitch
-                prev_pitch=graph['note']
+                return 2
         return 0
     
-    def _loss(self, pred, original_pred, target, desired_classification):
-
-        # counter_classification = torch.argmax(pred) # looses the grad, argmax not being differentiable 
-        # original_classification = torch.argmax(original_pred)
-        # print(pred)
-        # print(counter_classification)
-        # return -1 * torch.abs(counter_classification - original_classification)
-        
-        # logits_distance = torch.abs(pred-original_pred)
-        # return -1 * torch.sum(logits_distance)
+    def _loss(self, change, pred, original_pred, graph, target, desired_classification, balance_factor=1):
 
         ent = torch.nn.CrossEntropyLoss()
-        desired_pred = pred.argmax(dim=1)
+        desired_pred = original_pred.argmax(dim=1)
         desired_pred[target] = desired_classification
         # we apply a mask so only the prediction for the target is taken into account
-        target_mask = torch.tensor([i == target for i in range(len(desired_pred))])
+        n_notes = len(desired_pred)
+        if change.operation == 'add':
+            n_notes += 1
+            desired_pred = torch.cat((desired_pred, torch.tensor([0], device=desired_pred.device)))
+            # we put 0 as a desired classification for the new note because we won't look at it anyways
+        target_mask = torch.tensor([i == target for i in range(n_notes)])
+
+        d = self._dist_from_change_naive(change, graph)
 
         # print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
         # print(f'classification avec changement{pred.argmax(dim=1)[target]}')
 
-        return ent(pred[target_mask], desired_pred[target_mask])
+        return balance_factor * ent(pred[target_mask], desired_pred[target_mask]) + d
 
     
     def supports(self):
@@ -320,18 +317,24 @@ class MNModel_(torch.nn.Module):
         self.num_feat = num_feat
         self.num_layers = num_layers
 
-        """encoders for the remove operator"""
+        """
+        Encoder for choosing the operation to perform when unspecified. The loss depends on the nature of the operation because of the
+        counterfactual explanation distance term, hence the needs for an encoder that can me tuned.
+        """
+        self.operation_choice = EncodingGNN_(metadata, num_feat, 5, num_layers)
+
+        """Encoders for the remove operator"""
         self.removing_note_modules = torch.nn.ModuleDict({
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers)
         })
 
-        """encoders for the pitch update operator"""
+        """Encoders for the pitch update operator"""
         self.pitch_change_modules = torch.nn.ModuleDict({
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
             'pitch' : EncodingGNN_(metadata, num_feat, 12, num_layers)
         })
 
-        """encoders for the adding note operator"""
+        """Encoders for the adding note operator"""
         self.add_note_modules = torch.nn.ModuleDict({
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
             'pitch' : EncodingGNN_(metadata, num_feat, 12, num_layers),
@@ -340,13 +343,13 @@ class MNModel_(torch.nn.Module):
             'duration' : EncodingGNN_(metadata, num_feat, 4, num_layers)
             })
 
-        """encoders for the onset update operator"""
+        """Encoders for the onset update operator"""
         self.onset_change_modules = torch.nn.ModuleDict({
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
             'onset' : EncodingGNN_(metadata, num_feat, 2, num_layers)
         })
 
-        """encoders for the duration update operator"""
+        """Encoders for the duration update operator"""
         self.duration_change_modules = torch.nn.ModuleDict({
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
             'duration' : EncodingGNN_(metadata, num_feat, 4, num_layers)
@@ -361,13 +364,15 @@ class MNModel_(torch.nn.Module):
                 duration_div,
                 not_removed_notes,
                 computation_notes,
-                operation='random',
+                operation='model_choice',
                 target=None,
                 in_training=False):
         
-        if operation=='random':
+        if operation=='model_choice':
             possible_operations = ['pitch','onset','duration','add','remove']
-            op_idx = random.randint(0,len(possible_operations)-1)
+            # op_idx = random.randint(0,len(possible_operations)-1)
+            embeddings_for_operation_choice = self.operation_choice(x_dict, edge_index_dict)
+            op_idx = torch.argmax(embeddings_for_operation_choice['note'][target])
             operation = possible_operations[op_idx]
 
         computation_notes.sort()
