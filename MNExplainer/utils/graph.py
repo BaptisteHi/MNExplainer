@@ -58,6 +58,22 @@ def _to_label(cad_str):
             return 0 #let's ignore them for now, as they are very rare
     return 0
 
+def cad_label_to_string(cad):
+    match cad:
+        case 1:
+            return 'PAC'
+        case 2:
+            return 'IAC'
+        case 3:
+            return 'HC'
+        case 4:
+            return 'EC'
+        case 5:
+            return 'DC'
+        case 6:
+            return 'PC'
+    return ''
+
 def id_to_int(id):
     try:
         s = id.split('p')
@@ -112,4 +128,4 @@ def create_graph_for_score(score, include_cadence=False, include_id=False, inclu
         graph['note'].ts_beats = note_array['ts_beats']
     if include_divs_pq:    
         graph['note'].divs_pq = note_array['divs_pq']
-    return graph, complete_features_names
+    return graph, complete_features_names 
