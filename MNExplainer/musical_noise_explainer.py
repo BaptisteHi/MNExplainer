@@ -70,10 +70,12 @@ class MNExplainer(ExplainerAlgorithm):
     num_layers (optional) : int
         the number of convolution layers for the encoders in the explainer.
     lr (optional) : float
-        the learning rate of the model handling the noising process.    
+        the learning rate of the model handling the noising process.
+    balance_factor (optional) : float 
+        the factor balancing the importance between the minimality and the counterfactual aspect of the prediction in the loss function.
     """
 
-    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1):
+    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor = 1.):
         super().__init__()
 
         self.metadata = metadata
@@ -83,6 +85,7 @@ class MNExplainer(ExplainerAlgorithm):
         self.epochs = epochs
         self.model = model
         self.lr = lr
+        self.balance_factor = balance_factor
 
         self.mnmodel = MNModel_(metadata, num_feat, num_layers)
 
@@ -130,12 +133,11 @@ class MNExplainer(ExplainerAlgorithm):
 
             base_graph['note'].x.requires_grad = False
 
-        if retrieve_changes:
-            changes = [None]
+        changes = [None]
 
         if isinstance(num_expl, int):
             for _ in tqdm(range(1,num_expl + 1)):
-                self._train(self.mnmodel, self.model, base_graph, computation_notes, desired_classification, target=target, **kwargs)
+                self._train(self.mnmodel, self.model, base_graph, computation_notes, desired_classification, changes, target=target, **kwargs)
                 noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
                     base_graph.edge_index_dict,
@@ -147,8 +149,8 @@ class MNExplainer(ExplainerAlgorithm):
                     computation_notes,
                     target=target,
                 )
-                if retrieve_changes:
-                    changes.append(noise)
+                
+                changes.append(noise)
 
                 noisy_graph = HeteroData()
                 for tuple, tensor in noisy_edge_index_dict.items():
@@ -170,7 +172,7 @@ class MNExplainer(ExplainerAlgorithm):
                 # print(self.model(explanations[0].x_dict, explanations[0].edge_index_dict, **kwargs).argmax(dim=1)[target])
         else:
             for _, operation in tqdm(enumerate(num_expl)):
-                self._train(self.mnmodel, self.model, base_graph, computation_notes, desired_classification, target=target, operation=operation, **kwargs)
+                self._train(self.mnmodel, self.model, base_graph, computation_notes, desired_classification, changes, target=target, operation=operation, **kwargs)
                 noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
                     base_graph.edge_index_dict,
@@ -183,8 +185,8 @@ class MNExplainer(ExplainerAlgorithm):
                     operation=operation,
                     target=target
                 )
-                if retrieve_changes:
-                    changes.append(noise)
+                
+                changes.append(noise)
 
                 noisy_graph = HeteroData()
                 for tuple, tensor in noisy_edge_index_dict.items():
@@ -210,7 +212,7 @@ class MNExplainer(ExplainerAlgorithm):
         
         return explanations
     
-    def _train(self, mnmodel, model, graph, computation_notes, desired_classification, target=None, operation='random', **kwargs):
+    def _train(self, mnmodel, model, graph, computation_notes, desired_classification, changes, target=None, operation='model_choice', **kwargs):
 
         optimizer = torch.optim.Adam(mnmodel.parameters(), lr=self.lr, weight_decay=0.0005)
         device = graph.x_dict['note'].device
@@ -257,8 +259,8 @@ class MNExplainer(ExplainerAlgorithm):
             """
             pred = model(noisy_x_dict, noisy_edge_index_dict, **kwargs)
             original_pred = model(graph.x_dict, graph.edge_index_dict, **kwargs)
-            loss = self._loss(change, pred, original_pred, graph, target, desired_classification)
-            print(f'Loss : {loss}')
+            loss = self._loss(change, changes, pred, original_pred, graph, target, desired_classification, self.balance_factor)
+            # print(f'Loss : {loss}')
             loss.backward()
             optimizer.step()
 
@@ -266,18 +268,18 @@ class MNExplainer(ExplainerAlgorithm):
         # naive distance : each change of a note property is 2 because it could be made by removing and re-adding a modified version of a note
         match change.operation:
             case 'add':
-                return 1
+                return 0.1
             case 'remove':
-                return 1
+                return 0.1
             case 'onset':
-                return 2
+                return 0.2
             case 'duration':
-                return 2
+                return 0.2
             case 'pitch':
-                return 2
+                return 0.2
         return 0
     
-    def _loss(self, change, pred, original_pred, graph, target, desired_classification, balance_factor=1):
+    def _loss(self, change, changes, pred, original_pred, graph, target, desired_classification, balance_factor):
 
         ent = torch.nn.CrossEntropyLoss()
         desired_pred = original_pred.argmax(dim=1)
@@ -292,8 +294,12 @@ class MNExplainer(ExplainerAlgorithm):
 
         d = self._dist_from_change_naive(change, graph)
 
-        print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
-        print(f'classification avec changement{pred.argmax(dim=1)[target]}')
+        for chg in changes:
+            if chg != None:
+                d += self._dist_from_change_naive(chg, graph)
+
+        # print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
+        # print(f'classification avec changement{pred.argmax(dim=1)[target]}')
 
         return balance_factor * ent(pred[target_mask], desired_pred[target_mask]) + d
 
@@ -372,7 +378,7 @@ class MNModel_(torch.nn.Module):
                 operation='model_choice',
                 target=None,
                 in_training=False):
-        
+
         if operation=='model_choice':
             possible_operations = ['pitch','onset','duration','add','remove']
             # op_idx = random.randint(0,len(possible_operations)-1)

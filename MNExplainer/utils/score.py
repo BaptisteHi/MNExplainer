@@ -245,3 +245,5 @@ def visualize_explanation_files(score, target, explainer, num_expl, desired_clas
         indexation = {}
         indexation['id'] = {i : ids[i] for i in range(len(ids))}
         save_pyg_graph_as_json(graphexp, ids, name, extra_info=indexation, path = path)
+    
+    return explanation, changes
