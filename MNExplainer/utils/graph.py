@@ -3,7 +3,10 @@ import torch
 import graphmuse as gm
 import numpy as np
 import struttura as st
+import networkx as nx
+import math as m
 from pathlib import Path
+from torch_geometric.data import HeteroData
 
 
 def save_pyg_graph_as_json(graph, ids, name, extra_info=None, path="./"):
@@ -92,7 +95,7 @@ def int_to_id(n):
         id = f'p{part_number}n{note_number}'
         return id 
 
-def create_graph_for_score(score, include_cadence=False, include_id=False, include_ts_beats=False, include_divs_pq=False):
+def create_graph_for_score(score, include_cadence=False, include_id=False, include_ts_beats=False, include_divs_pq=False, add_beats=False):
     """
     The function for creating a heterogeneous graph out of a score object.
 
@@ -110,7 +113,7 @@ def create_graph_for_score(score, include_cadence=False, include_id=False, inclu
     cad_features, cad_f_names = st.descriptors.utils.cadence_features.get_cad_features(score[-1], note_array)
     complete_features = np.concatenate((features, cad_features), axis=1)
     complete_features_names = f_names + cad_f_names
-    graph = gm.create_score_graph(complete_features, score.note_array(), add_beats=True)
+    graph = gm.create_score_graph(complete_features, score.note_array(), add_beats=add_beats)
     score_cadences = score[-1].cadences
     notes_onsets = graph["note"].onset_div
     n = len(notes_onsets) #number of nodes in the graph / notes in the score
@@ -128,4 +131,15 @@ def create_graph_for_score(score, include_cadence=False, include_id=False, inclu
         graph['note'].ts_beats = note_array['ts_beats']
     if include_divs_pq:    
         graph['note'].divs_pq = note_array['divs_pq']
-    return graph, complete_features_names 
+    return graph, complete_features_names
+
+def hgraph_to_networkx(graph : HeteroData, computation_notes, edge_tuple):
+    """unused for now and very little optimized"""
+    graph_edges = graph.edge_index_dict[edge_tuple]
+    nx_graph = nx.Graph()
+    nx_graph.add_nodes_from(computation_notes)
+    for i in range(len(graph_edges[0])):
+        u,v = graph_edges[0,i], graph_edges[1,i]
+        if u in computation_notes and v in computation_notes:
+            nx_graph.add_edge(u,v)
+    return nx_graph
