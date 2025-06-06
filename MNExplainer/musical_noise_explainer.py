@@ -286,7 +286,7 @@ class MNExplainer(ExplainerAlgorithm):
                 return 0.2
         return 0
     
-    def _dist_from_change(self, changes, graph, input_graph, computation_notes, balance=1):
+    def _dist_from_change(self, changes, graph, input_graph, computation_notes, balance=0.1):
         dnodes = 0
         dgraph = 0
         computation_notes.sort()
@@ -297,16 +297,49 @@ class MNExplainer(ExplainerAlgorithm):
         dnodes = torch.sum(input_graph.x_dict['note'][computation_notes_mask_i] - graph.x_dict['note'][computation_notes_mask_n])
         
         # computing the graph edit distance between the computation subgraphs
-        # TODO using the information contained in the changes tracking edge removal and appending
-        
-        
+        removed_edges_unique = []
+        added_edges_unique = []
+        added_and_removed_edges = []
+        added_notes_ind = []
+        removed_notes_ind = []
+
         for chg in changes[1:]:
             if chg.operation == 'add':
-                pass
+                add_idx = chg.note_index
+                added_notes_ind.append(add_idx)
+                # lookig if the added note has exactly the properties of a note that got removed in previous changes.
+                # for r_note in removed_notes_ind:
+                    # if graph.x_dict['note'][add_idx] == graph.x_dict['note'][r_note]:
+                        # pass
+                dnodes += torch.sum(graph.x_dict['note'][add_idx])
             if chg.operation == 'remove':
                 rmv_idx = chg.note_index
+                removed_notes_ind.append(rmv_idx)
+                if rmv_idx in added_notes_ind:
+                    # the note removed was added before, hence there is no difference in the input graph and the current graph regarding this note.
+                    # we remove the distance that we added when the note was added in a previous change.
+                    # Note : this could happend the other way around : a note sharing the same properties as a removed note is added. The 
+                    # problem with the other way around is to also balance the distance induced by the edges in dgraph due to the removal
+                    # of the note because these edges will not exactly be re-added in the final graph with the new note sharing the same
+                    # properties, its index being brand new. Therefore, this scenario remains treated as if the new note was a different note as the
+                    # one removed (which, tecnically, is accurate).
+                    dnodes -= torch.sum(graph.x_dict['note'][rmv_idx])
+                else:
+                    dnodes += torch.sum(graph.x_dict['note'][rmv_idx])
+            rem = chg.removed_edges
+            add = chg.added_edges
+            for r_edge in rem:
+                if not r_edge in removed_edges_unique:
+                    removed_edges_unique.append(r_edge)
+            for a_edge in add:
+                if not a_edge in added_edges_unique:
+                    added_edges_unique.append(a_edge)
+                if a_edge in removed_edges_unique:
+                    added_and_removed_edges.append(a_edge)
+        
+        dgraph = max(len(removed_edges_unique), len(added_edges_unique)) - len(added_and_removed_edges)
                 
-        return dnodes + dgraph
+        return balance * (dnodes + dgraph)
     
     def _loss(self, change, changes, pred, original_pred, graph, input_graph, computation_notes, target, desired_classification, balance_factor):
         ent = torch.nn.CrossEntropyLoss()
@@ -328,7 +361,7 @@ class MNExplainer(ExplainerAlgorithm):
         # print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
         # print(f'classification avec changement{pred.argmax(dim=1)[target]}')
 
-        _ = self._dist_from_change(changes, graph, input_graph, computation_notes)
+        # _ = self._dist_from_change(changes, graph, input_graph, computation_notes)
 
         return balance_factor * ent(pred[target_mask], desired_pred[target_mask]) + d
 
@@ -526,7 +559,8 @@ class MNModel_(torch.nn.Module):
                     ts_beats = torch.tensor(ts_beats, device=x_dict['note'].device)
                 noisy_ts_beats = torch.cat((ts_beats, torch.tensor([0],device=x_dict['note'].device)))
 
-                update = Change_('add', 
+                update = Change_('add',
+                                 note_index=len(not_removed_notes)-1, 
                                  pitch=new_note_pitch, 
                                  octave=new_note_octave, 
                                  onset=new_note_onset, 
