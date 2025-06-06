@@ -1,0 +1,3 @@
+[submodule "MNExplainer/cadence_xml_datasets"]
+	path = MNExplainer/cadence_xml_datasets
+	url = git@github.com:manoskary/cadence_xml_datasets.git
