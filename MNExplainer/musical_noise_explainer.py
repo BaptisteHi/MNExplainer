@@ -10,6 +10,7 @@ from math import tanh
 from utils.graph import hgraph_to_networkx
 
 from tqdm import tqdm
+import time
 
 from typing import List, Union, Tuple
 
@@ -286,7 +287,7 @@ class MNExplainer(ExplainerAlgorithm):
                 return 0.2
         return 0
     
-    def _dist_from_change(self, changes, graph, input_graph, computation_notes, balance=0.1):
+    def _dist_from_change(self, changes, graph, input_graph, computation_notes, balance_nodes=0.1, balance_graph=0.1):
         dnodes = 0
         dgraph = 0
         computation_notes.sort()
@@ -294,12 +295,11 @@ class MNExplainer(ExplainerAlgorithm):
         computation_notes_mask_n = torch.tensor([i in computation_notes for i in range(len(graph.x_dict['note']))])
 
         # computing Manhattan distance between the input and the explanation computation subgraphs
-        dnodes = torch.sum(input_graph.x_dict['note'][computation_notes_mask_i] - graph.x_dict['note'][computation_notes_mask_n])
+        dnodes = torch.sum(torch.abs(input_graph.x_dict['note'][computation_notes_mask_i] - graph.x_dict['note'][computation_notes_mask_n]))
         
         # computing the graph edit distance between the computation subgraphs
-        removed_edges_unique = []
-        added_edges_unique = []
-        added_and_removed_edges = []
+        removed_edges = []
+        added_edges = []
         added_notes_ind = []
         removed_notes_ind = []
 
@@ -326,22 +326,37 @@ class MNExplainer(ExplainerAlgorithm):
                     dnodes -= torch.sum(graph.x_dict['note'][rmv_idx])
                 else:
                     dnodes += torch.sum(graph.x_dict['note'][rmv_idx])
+            
             rem = chg.removed_edges
             add = chg.added_edges
-            for r_edge in rem:
-                if not r_edge in removed_edges_unique:
-                    removed_edges_unique.append(r_edge)
-            for a_edge in add:
-                if not a_edge in added_edges_unique:
-                    added_edges_unique.append(a_edge)
-                if a_edge in removed_edges_unique:
-                    added_and_removed_edges.append(a_edge)
+            removed_edges += rem
+            added_edges += add
+
+        set_rem = set(removed_edges)
+        set_add = set(added_edges)
+        removed_edges_unique = list(set_rem)
+        added_edges_unique = list(set_add) 
+
+        added_and_removed_edges_exact = list(set_rem & set_add) 
+        # Contains all the edges of a certain type that were added and removed
+
+        rem_without_type = [e[0:2] for e in removed_edges]
+        add_without_type = [e[0:2] for e in added_edges]
+        set_rem_notype = set(rem_without_type)
+        set_add_notype = set(add_without_type)
+
+        added_and_removed_including_substitutions = list(set_rem_notype & set_add_notype) 
+        # Contains all the edges that were removed or added regardless of their type, which includes the edges
+        # that simply require a type substitution.
+
+        n_substitutions = len(added_and_removed_including_substitutions) - len (added_and_removed_edges_exact)
         
-        dgraph = max(len(removed_edges_unique), len(added_edges_unique)) - len(added_and_removed_edges)
-                
-        return balance * (dnodes + dgraph)
+        dgraph = max(0, len(removed_edges_unique) + len (added_edges_unique) - n_substitutions - 2*len(added_and_removed_edges_exact))
+
+        return balance_nodes * dnodes + balance_graph * dgraph
     
     def _loss(self, change, changes, pred, original_pred, graph, input_graph, computation_notes, target, desired_classification, balance_factor):
+        
         ent = torch.nn.CrossEntropyLoss()
         desired_pred = original_pred.argmax(dim=1)
         desired_pred[target] = desired_classification
@@ -361,7 +376,7 @@ class MNExplainer(ExplainerAlgorithm):
         # print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
         # print(f'classification avec changement{pred.argmax(dim=1)[target]}')
 
-        # _ = self._dist_from_change(changes, graph, input_graph, computation_notes)
+        _ = self._dist_from_change(changes, graph, input_graph, computation_notes)
 
         return balance_factor * ent(pred[target_mask], desired_pred[target_mask]) + d
 
@@ -616,7 +631,7 @@ class MNModel_(torch.nn.Module):
         added_edges = []
 
         for edge_tuple in self.metadata[1]:
-            node_type_1, _, node_type_2 = edge_tuple
+            node_type_1, type, node_type_2 = edge_tuple
 
             match node_type_1, node_type_2:
                 case 'note','note':
@@ -636,7 +651,7 @@ class MNModel_(torch.nn.Module):
                     first_end_rem = edge_tensor[0,:][rem_edges_mask]
                     second_end_rem = edge_tensor[1,:][rem_edges_mask]
                     for k in range(len(first_end_rem)):
-                        removed_edges.append((first_end_rem[k],second_end_rem[k]))
+                        removed_edges.append((first_end_rem[k], second_end_rem[k], type))
 
                 case 'note',_:
                     edge_tensor = edge_index_dict[edge_tuple]
@@ -655,7 +670,7 @@ class MNModel_(torch.nn.Module):
                     first_end_rem = edge_tensor[0,:][rem_edges_mask]
                     second_end_rem = edge_tensor[1,:][rem_edges_mask]
                     for k in range(len(first_end_rem)):
-                        removed_edges.append((first_end_rem[k],second_end_rem[k]))
+                        removed_edges.append((first_end_rem[k], second_end_rem[k], type))
 
                 case _,'note':
                     edge_tensor = edge_index_dict[edge_tuple]
@@ -674,7 +689,7 @@ class MNModel_(torch.nn.Module):
                     first_end_rem = edge_tensor[0,:][rem_edges_mask]
                     second_end_rem = edge_tensor[1,:][rem_edges_mask]
                     for k in range(len(first_end_rem)):
-                        removed_edges.append((first_end_rem[k],second_end_rem[k]))
+                        removed_edges.append((first_end_rem[k], second_end_rem[k], type))
 
                 case _,_:
                     continue
@@ -699,12 +714,12 @@ class MNModel_(torch.nn.Module):
                                 new_edge = torch.tensor([[i],[j]], dtype=int,device=device)
                                 if i == j:
                                     new_edge_index_dict['note','rest','note'] = torch.cat((new_edge_index_dict['note','rest','note'], new_edge),1)
-                                    added_edges.append((i,i))
+                                    added_edges.append((i,i,'rest'))
                                 else:
                                     new_edge_rev = torch.tensor([[j],[i]], dtype=int, device=device)
                                     new_edge_index_dict['note','rest','note'] = torch.cat((new_edge_index_dict['note','rest','note'], new_edge, new_edge_rev),1)
-                                    added_edges.append((i,j))
-                                    added_edges.append((j,i))
+                                    added_edges.append((i,j,'rest'))
+                                    added_edges.append((j,i,'rest'))
                                 # new_edge_index_dict['note','rest_rev','note'] = torch.cat((new_edge_index_dict['note','rest_rev','note'], new_edge_rev),1)
 
         return new_edge_index_dict, removed_edges, added_edges
@@ -758,24 +773,24 @@ class MNModel_(torch.nn.Module):
                 new_edge = torch.tensor([[note_index],[j]], dtype=int,device=device)
                 if j == note_index:
                     new_edge_index_dict['note','onset','note'] = torch.cat((new_edge_index_dict['note','onset','note'], new_edge),1)
-                    added_edges.append((j,j))
+                    added_edges.append((j,j,'onset'))
                 else:
                     new_edge_rev = torch.tensor([[j],[note_index]], dtype=int,device=device)
                     new_edge_index_dict['note','onset','note'] = torch.cat((new_edge_index_dict['note','onset','note'], new_edge, new_edge_rev),1)
-                    added_edges.append((j,note_index))
-                    added_edges.append((note_index,j))
+                    added_edges.append((j,note_index,'onset'))
+                    added_edges.append((note_index,j,'onset'))
 
         for j in np.where((onset_div_c == onset + duration))[0]:
             if not_removed_notes[j] and not_removed_notes[note_index]:
                 new_edge = torch.tensor([[note_index],[j]], dtype=int,device=device)
                 if j == note_index:
                     new_edge_index_dict['note','consecutive','note'] = torch.cat((new_edge_index_dict['note','consecutive','note'], new_edge),1)
-                    added_edges.append((j,j))
+                    added_edges.append((j,j,'consecutive'))
                 else:
                     new_edge_rev = torch.tensor([[j],[note_index]], dtype=int,device=device)
                     new_edge_index_dict['note','consecutive','note'] = torch.cat((new_edge_index_dict['note','consecutive','note'], new_edge, new_edge_rev),1)
-                    added_edges.append((j,note_index))
-                    added_edges.append((note_index,j))
+                    added_edges.append((j,note_index,'consecutive'))
+                    added_edges.append((note_index,j,'consecutive'))
 
                 # new_edge_index_dict['note','consecutive_rev','note'] = torch.cat((new_edge_index_dict['note','consecutive_rev','note'], new_edge_rev),1)
 
@@ -784,12 +799,12 @@ class MNModel_(torch.nn.Module):
                 new_edge = torch.tensor([[note_index],[j]], dtype=int,device=device)
                 if j == note_index:
                     new_edge_index_dict['note','during','note'] = torch.cat((new_edge_index_dict['note','during','note'], new_edge),1)
-                    added_edges.append((j,j))
+                    added_edges.append((j,j,'during'))
                 else:
                     new_edge_rev = torch.tensor([[j],[note_index]], dtype=int,device=device)
                     new_edge_index_dict['note','during','note'] = torch.cat((new_edge_index_dict['note','during','note'], new_edge, new_edge_rev),1)
-                    added_edges.append((j,note_index))
-                    added_edges.append((note_index,j))
+                    added_edges.append((j,note_index,'during'))
+                    added_edges.append((note_index,j,'during'))
 
                 # new_edge_index_dict['note','during_rev','note'] = torch.cat((new_edge_index_dict['note','during_rev','note'], new_edge_rev),1)
         
@@ -812,12 +827,12 @@ class MNModel_(torch.nn.Module):
                             new_edge = torch.tensor([[i],[j]], dtype=int, device=device)
                             if i == j:
                                 new_edge_index_dict['note','rest','note'] = torch.cat((new_edge_index_dict['note','rest','note'], new_edge),1)
-                                added_edges.append((j,j))
+                                added_edges.append((j,j,'rest'))
                             else:
                                 new_edge_rev = torch.tensor([[j],[i]], dtype=int, device=device)
                                 new_edge_index_dict['note','rest','note'] = torch.cat((new_edge_index_dict['note','rest','note'], new_edge, new_edge_rev),1)
-                                added_edges.append((j,i))
-                                added_edges.append((i,j))
+                                added_edges.append((j,i,'rest'))
+                                added_edges.append((i,j,'rest'))
                             # new_edge_index_dict['note','rest_rev','note'] = torch.cat((new_edge_index_dict['note','rest_rev','note'], new_edge_rev),1)
 
         return new_edge_index_dict, removed_edges, added_edges
