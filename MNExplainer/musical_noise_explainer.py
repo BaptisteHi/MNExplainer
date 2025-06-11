@@ -10,7 +10,6 @@ from math import tanh
 from utils.graph import hgraph_to_networkx
 
 from tqdm import tqdm
-import time
 
 from typing import List, Union, Tuple
 
@@ -38,13 +37,14 @@ class Change_:
     added_edges (optional) : list
         the edges that were added because of this change
     """
-    def __init__(self, operation, note_index=0, pitch=0, octave=0, onset=0, duration=0, removed_edges=[], added_edges=[]):
+    def __init__(self, operation, note_index=0, pitch=0, octave=0, onset=0, duration=0, spelling='', removed_edges=[], added_edges=[]):
         self.operation = operation
         self.note_index = note_index
         self.pitch = pitch
         self.octave = octave
         self.onset = onset
         self.duration = duration
+        self.spelling = spelling
         self.removed_edges = removed_edges
         self.added_edges = added_edges
     
@@ -55,11 +55,13 @@ class Change_:
             case 'remove':
                 return f'Isolating the node which index is {self.note_index}'
             case 'onset': 
-                return f'Ajusting the onset of the note which corresponding node index is {self.note_index} to the onset {self.onset}'
+                return f'Adjusting the onset of the note which corresponding node index is {self.note_index} to the onset {self.onset}'
             case 'duration':
-                return f'Ajusting the duration of the note which corresponding node index is {self.note_index} to the duration {self.duration}'
+                return f'Adjusting the duration of the note which corresponding node index is {self.note_index} to the duration {self.duration}'
             case 'pitch':
-                return f'Ajusting the pitch of the note which corresponding node index is {self.note_index} to the pitch {self.pitch}'
+                return f'Adjusting the pitch of the note which corresponding node index is {self.note_index} to the pitch {self.pitch}'
+            case 'spelling':
+                return f"Adjusting the pitch spelling of the note which corresponding node index is {self.note_index} to the spelling " + self.spelling 
             case _:
                 assert False, 'The operation of this change object is not recognized or cannot be printed'
 
@@ -99,7 +101,7 @@ class MNExplainer(ExplainerAlgorithm):
 
         torch.manual_seed(0)
 
-    def forward(self, graph, desired_classification, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, **kwargs): 
+    def forward(self, graph, desired_classification, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, forbidden_op=[], **kwargs): 
         base_graph = copy.deepcopy(graph)
         explanations = [base_graph]
         device = base_graph.x_dict['note'].device
@@ -145,7 +147,7 @@ class MNExplainer(ExplainerAlgorithm):
 
         if isinstance(num_expl, int):
             for _ in tqdm(range(1,num_expl + 1)):
-                self._train(self.mnmodel, self.model, base_graph, graph, computation_notes, desired_classification, changes, target=target, **kwargs)
+                self._train(self.mnmodel, self.model, base_graph, graph, computation_notes, desired_classification, changes, target=target, forbidden_op=forbidden_op, **kwargs)
                 noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
                     base_graph.edge_index_dict,
@@ -156,6 +158,7 @@ class MNExplainer(ExplainerAlgorithm):
                     not_removed_notes,
                     computation_notes,
                     target=target,
+                    forbidden_op=forbidden_op
                 )
                 
                 changes.append(noise)
@@ -180,7 +183,7 @@ class MNExplainer(ExplainerAlgorithm):
                 # print(self.model(explanations[0].x_dict, explanations[0].edge_index_dict, **kwargs).argmax(dim=1)[target])
         else:
             for _, operation in tqdm(enumerate(num_expl)):
-                self._train(self.mnmodel, self.model, base_graph, graph, computation_notes, desired_classification, changes, target=target, operation=operation, **kwargs)
+                self._train(self.mnmodel, self.model, base_graph, graph, computation_notes, desired_classification, changes, target=target, operation=operation, forbidden_op=forbidden_op, **kwargs)
                 noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
                     base_graph.edge_index_dict,
@@ -191,7 +194,8 @@ class MNExplainer(ExplainerAlgorithm):
                     not_removed_notes,
                     computation_notes,
                     operation=operation,
-                    target=target
+                    target=target,
+                    forbidden_op=forbidden_op
                 )
                 
                 changes.append(noise)
@@ -220,7 +224,7 @@ class MNExplainer(ExplainerAlgorithm):
         
         return explanations
     
-    def _train(self, mnmodel, model, graph, input_graph, computation_notes, desired_classification, changes, target=None, operation='model_choice', **kwargs):
+    def _train(self, mnmodel, model, graph, input_graph, computation_notes, desired_classification, changes, target=None, operation='model_choice', forbidden_op=[], **kwargs):
 
         optimizer = torch.optim.Adam(mnmodel.parameters(), lr=self.lr, weight_decay=0.0005)
         device = graph.x_dict['note'].device
@@ -239,6 +243,7 @@ class MNExplainer(ExplainerAlgorithm):
                     computation_notes,
                     operation=operation,
                     target=target,
+                    forbidden_op=forbidden_op,
                     in_training=True
                 )
             """
@@ -428,7 +433,19 @@ class MNModel_(torch.nn.Module):
             'pitch' : EncodingGNN_(metadata, num_feat, 12, num_layers),
             'octave' : EncodingGNN_(metadata, num_feat, 10, num_layers),
             'onset' : EncodingGNN_(metadata, num_feat, 2, num_layers),
-            'duration' : EncodingGNN_(metadata, num_feat, 4, num_layers)
+            'duration' : EncodingGNN_(metadata, num_feat, 4, num_layers),
+            'spelling0' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling1' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling2' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling3' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling4' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling5' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling6' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling7' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling8' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling9' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling10' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling11' : EncodingGNN_(metadata, num_feat, 3, num_layers)
         })
 
         """Encoders for the onset update operator"""
@@ -442,6 +459,23 @@ class MNModel_(torch.nn.Module):
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
             'duration' : EncodingGNN_(metadata, num_feat, 4, num_layers)
         })
+
+        """Encoders for the pitch spelling update operator"""
+        self.spelling_change_modules = torch.nn.ModuleDict({
+            'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
+            'spelling0' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling1' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling2' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling3' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling4' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling5' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling6' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling7' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling8' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling9' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling10' : EncodingGNN_(metadata, num_feat, 3, num_layers),
+            'spelling11' : EncodingGNN_(metadata, num_feat, 3, num_layers) 
+        })
     
     def forward(self,
                 x_dict,
@@ -454,10 +488,11 @@ class MNModel_(torch.nn.Module):
                 computation_notes,
                 operation='model_choice',
                 target=None,
+                forbidden_op=[],
                 in_training=False):
 
         if operation=='model_choice':
-            possible_operations = ['pitch','onset','duration','add','remove']
+            possible_operations = ['pitch','onset','duration','add','remove','spelling']
             # op_idx = random.randint(0,len(possible_operations)-1)
             embeddings_for_operation_choice = self.operation_choice(x_dict, edge_index_dict)
             op_idx = torch.argmax(embeddings_for_operation_choice['note'][target])
@@ -527,11 +562,14 @@ class MNModel_(torch.nn.Module):
                 embeddings_for_note_index = self.add_note_modules['index'](x_dict, edge_index_dict)
 
                 if target is None:
+                    # OUTDATED CODE
+                    # TODO
                     note_index = torch.argmax(embeddings_for_note_index['note'])
                     new_note_pitch = torch.argmax(embeddings_for_new_note_pitch['note'][note_index])
                     new_note_octave = torch.argmax(embeddings_for_new_note_octave['note'][note_index])
                     new_note_onset = torch.tensor(round(float(embeddings_for_new_note_onset['note'][note_index])), device=x_dict['note'].device)
                     new_note_duration = torch.tensor(round(float(embeddings_for_new_note_duration['note'][note_index])), device=x_dict['note'].device)
+                
                 elif isinstance(target, int):
                     note_index = target
                     new_note_pitch = torch.argmax(embeddings_for_new_note_pitch['note'][note_index])
@@ -542,6 +580,8 @@ class MNModel_(torch.nn.Module):
                     new_note_duration = int((1 + torch.argmax(embeddings_for_new_note_duration['note'][note_index])) * divs_pq[0]/2)
 
                 elif isinstance(target, tuple):
+                    # OUTDATED CODE
+                    # TODO
                     note_index1 = target[0]
                     note_index2 = target[1]
                     new_note_pitch = torch.argmax(
@@ -567,7 +607,7 @@ class MNModel_(torch.nn.Module):
 
                 new_x_dict, new_edge_index_dict, noisy_onset_div, noisy_duration_div, removed_edges, added_edges = self._add_note(
                     x_dict, edge_index_dict, new_note_onset, new_note_duration, onset_div, duration_div, feature_vector, not_removed_notes)
-                # noisy_ts_beats = np.concatenate((ts_beats,np.array([0])),axis=None)
+
                 try:
                     ts_beats.to(x_dict['note'].device)
                 except:
@@ -598,6 +638,17 @@ class MNModel_(torch.nn.Module):
                 new_x_dict = dict(x_dict)
                 
                 update = Change_('remove', note_index=note_index, removed_edges=removed_edges, added_edges=added_edges)
+
+                return new_x_dict, new_edge_index_dict, ts_beats, onset_div, duration_div, update
+            
+            case 'spelling':
+                
+                spelling = ''
+                note_index = 0
+                new_x_dict = self._update_spelling(spelling, note_index, x_dict)
+                new_edge_index_dict = dict(edge_index_dict)
+
+                update = Change_('spelling', note_index=note_index, spelling=spelling)
 
                 return new_x_dict, new_edge_index_dict, ts_beats, onset_div, duration_div, update
 
@@ -750,6 +801,11 @@ class MNModel_(torch.nn.Module):
             edge_index_dict, note_index, int(onset_div[note_index]), int(duration), onset_div, noisy_duration_div, not_removed_notes)
 
         return new_x_dict, new_edge_index_dict, noisy_duration_div, removed_edges, added_edges
+    
+    def _update_spelling(self, spelling, note_index, x_dict):
+        new_x_dict = dict(x_dict)
+        # TODO : change the spelling of the note_index note in the dict.
+        return new_x_dict
 
     def _recompute_edge_dict(self, edge_index_dict, note_index, onset, duration, onset_div, duration_div, not_removed_notes, remove_previous=True):
         # we remove the edges using the _remove_note method
