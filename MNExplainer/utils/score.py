@@ -32,7 +32,7 @@ def _spelling_from_midi_pitch(pitch):
         case _:
             assert False, 'Failed to recognize pitch - must be an integer between 0 and 11'
 
-def midi_pitch_from_spelling(gmspelling):
+def midi_pitch_from_spelling(gm_spelling):
     """
     """
     pitch = 0

@@ -2,11 +2,124 @@ import torch_scatter
 from graphmuse.nn.models.metrical_gnn import MetricalGNN
 import torch
 from torch import nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
 from torchmetrics import F1Score, Accuracy
-from old_cadence_detection_model import SMOTE
 import numpy as np
-import torch.nn.functional as F
+import re
+from partitura.score import Interval
+import partitura as pt
+from .old_cadence_detection_model import SMOTE
+
+
+class PitchEncoder(object):
+    def __init__(self):
+        self.PITCHES = {
+            0: ["C", "B#", "D--"],
+            1: ["C#", "B##", "D-"],
+            2: ["D", "C##", "E--"],
+            3: ["D#", "E-", "F--"],
+            4: ["E", "D##", "F-"],
+            5: ["F", "E#", "G--"],
+            6: ["F#", "E##", "G-"],
+            7: ["G", "F##", "A--"],
+            8: ["G#", "A-"],
+            9: ["A", "G##", "B--"],
+            10: ["A#", "B-", "C--"],
+            11: ["B", "A##", "C-"],
+        }
+        self.accepted_pitches = np.array([ii for i in self.PITCHES.values() for ii in i])
+        self.KEY_SIGNATURES = list(range(-7, 8))
+        self.encode_dim = len(self.accepted_pitches)
+        self.num_classes = len(self.accepted_pitches)
+        self.classes_ = np.unique(self.accepted_pitches)
+        self.transposition_dict = {}
+
+    def rooting_function(self, x):
+        if x[1] == 0:
+            suffix = ""
+        elif x[1] == 1:
+            suffix = "#"
+        elif x[1] == 2:
+            suffix = "##"
+        elif x[1] == -1:
+            suffix = "-"
+        elif x[1] == -2:
+            suffix = "--"
+        else:
+            raise ValueError(f"Alteration {x[1]} is not supported")
+        out = x[0] + suffix
+        return out
+
+    def encode(self, note_array):
+        """
+        One-hot encoding of pitch spelling triplets.
+
+        x has to be a partitura note_array
+        """
+        pitch_spelling = note_array[["step", "alter"]]
+        root = self.rooting_function
+        y = np.vectorize(root)(pitch_spelling)
+        return np.searchsorted(self.classes_, y)
+
+    def decode(self, x):
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+        return self.classes_[x]
+
+    def transpose(self, x, interval):
+        """
+        Transpose pitch spelling by an interval.
+
+        Parameters
+        ----------
+        x : numpy array or torch tensor
+            Pitch spelling integer labels.
+        interval : partitura.Interval or str
+            The interval by which to transpose the pitch spelling.
+        """
+        to_tensor = False
+        device = None
+        if isinstance(x, torch.Tensor):
+            device = x.device
+            tdtype = x.dtype
+            x = x.detach().cpu().numpy()
+            to_tensor = True
+        if isinstance(interval, str):
+            # Quality is any of the following: P, M, m, A, d
+            quality = re.findall(r"[PMAmd]", interval)[0]
+            number = int(re.findall(r"\d+", interval)[0])
+            interval = Interval(number, quality)
+        interval_name = interval.quality + str(interval.number)
+        if interval_name not in self.transposition_dict.keys():
+            self.introduce_transposition(interval)
+        if not np.all(np.isin(x, self.transposition_dict[interval_name]["accepted_indices"])):
+            # if there are pitches that cannot be transposed
+            raise ValueError("Some pitches cannot be transposed by the given interval")
+        reindex = self.transposition_dict[interval_name]["reindex"]
+        new_x = reindex[x]
+        if to_tensor:
+            new_x = torch.tensor(new_x, device=device, dtype=tdtype)
+        return new_x
+
+    def introduce_transposition(self, interval):
+        interval_name = interval.quality + str(interval.number)
+        step = [re.sub(r"[\#\-]", "", p) for p in self.classes_]
+        alter = [p.count("#") - p.count("-") for p in self.classes_]
+        transposed_pitches = []
+        for s, a in zip(step, alter):
+            try:
+                n = pt.utils.music.transpose_note(s, a, interval)
+            except:
+                n = ("X", 0)
+            transposed_pitches.append(n)
+        transposed_pitches = np.array(transposed_pitches, dtype=[("step", "U2"), ("alter", int)])
+        idx = np.arange(len(self.classes_))
+        reindex = np.zeros(len(self.classes_), dtype=int)
+        accepted_pi2m = idx[transposed_pitches["step"] != "X"]
+        transposed_pitches = transposed_pitches[accepted_pi2m]
+        reindex[accepted_pi2m] = self.encode(transposed_pitches)
+        self.transposition_dict[interval_name] = {"reindex": reindex, "accepted_indices": accepted_pi2m}
 
 
 class CadenceGNNPytorch(nn.Module):
@@ -95,12 +208,12 @@ class CadenceGNNPytorch(nn.Module):
         x = self.pool_mlp(x)
         return x
 
-    def forward(self, x_dict, edge_index_dict, batch_size, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None):
+    def forward(self, x_dict, edge_index_dict, batch_size, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
         if neighbor_mask_node is None:
             neighbor_mask_node = {k: torch.zeros((x_dict[k].shape[0], ), device=x_dict[k].device).long() for k in x_dict}
         if neighbor_mask_edge is None:
             neighbor_mask_edge = {k: torch.zeros((edge_index_dict[k].shape[-1], ), device=edge_index_dict[k].device).long() for k in edge_index_dict}
-        x = self.encode(x_dict, edge_index_dict, batch_size, neighbor_mask_node, neighbor_mask_edge, batch_dict)
+        x = self.encode(x_dict, edge_index_dict, batch_size, neighbor_mask_node, neighbor_mask_edge, batch_dict, pitch_spelling)
         logits = self.cad_clf(x)
         return torch.softmax(logits, dim=-1)
 
