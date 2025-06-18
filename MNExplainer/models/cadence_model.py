@@ -4,6 +4,9 @@ import torch
 from torch import nn
 import pytorch_lightning as pl
 from torchmetrics import F1Score, Accuracy
+from old_cadence_detection_model import SMOTE
+import numpy as np
+import torch.nn.functional as F
 
 
 class CadenceGNNPytorch(nn.Module):

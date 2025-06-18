@@ -32,6 +32,12 @@ def _spelling_from_midi_pitch(pitch):
         case _:
             assert False, 'Failed to recognize pitch - must be an integer between 0 and 11'
 
+def midi_pitch_from_spelling(gmspelling):
+    """
+    """
+    pitch = 0
+    return pitch
+
 def _next_id_available(part : scr.Part):
     max_id = max([int(note.id.split('n')[-1]) for note in part.notes_tied])
     return max_id + 1
