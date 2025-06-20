@@ -91,7 +91,7 @@ class MNExplainer(ExplainerAlgorithm):
         the factor balancing the importance between the minimality and the counterfactual aspect of the prediction in the loss function.
     """
 
-    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=True):
+    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=True, seed=0):
         super().__init__()
 
         self.metadata = metadata
@@ -105,8 +105,7 @@ class MNExplainer(ExplainerAlgorithm):
         self.balance_factor = balance_factor
         self.uses_pitch_spelling = uses_pitch_spelling
         self.mnmodel = MNModel_(metadata, num_feat, num_layers)
-
-        torch.manual_seed(0)
+        torch.manual_seed(seed)
 
     def forward(self, graph, desired_classification, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, forbidden_op=[], **kwargs): 
         base_graph = copy.deepcopy(graph)
