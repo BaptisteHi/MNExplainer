@@ -9,6 +9,7 @@ from graphmuse.utils.graph_utils import trim_to_layer
 from math import tanh
 from utils.graph import hgraph_to_networkx
 from utils.score import midi_pitch_from_spelling
+from mnexplainer.models.cadence_model import PitchEncoder
 
 from tqdm import tqdm
 
@@ -100,9 +101,9 @@ class MNExplainer(ExplainerAlgorithm):
         self.epochs = epochs
         self.model = model
         self.lr = lr
+        self.pitch_encoder = PitchEncoder()
         self.balance_factor = balance_factor
         self.uses_pitch_spelling = uses_pitch_spelling
-
         self.mnmodel = MNModel_(metadata, num_feat, num_layers)
 
         torch.manual_seed(0)
@@ -747,7 +748,15 @@ class MNModel_(torch.nn.Module):
     def _update_pitch(self, new_pitch, note_index, x_dict):
         new_x_dict = dict(x_dict)
         for pitch in range(12):
-            new_x_dict['note'][note_index][3+pitch] = float(pitch==new_pitch)
+            new_x_dict['note'][note_index][3+pitch] = float(pitch==new_pitch)        
+        return new_x_dict
+
+    def _update_pitch_spelling(self, new_pitch_spelling, note_index, x_dict):
+        new_x_dict = dict(x_dict)
+        new_x_dict["pitch_spelling"][note_index] = new_pitch_spelling
+        new_pitch = self.pitch_encoder.get_pitch_class(new_pitch_spelling)
+        for pitch in range(12):
+            new_x_dict['note'][note_index][3+pitch] = float(pitch==new_pitch)        
         return new_x_dict
     
     def _update_onset(self, onset, note_index, onset_div, duration_div, edge_index_dict, not_removed_notes):
