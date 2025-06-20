@@ -2,6 +2,7 @@ import torch_scatter
 from graphmuse.nn.models.metrical_gnn import MetricalGNN
 import torch
 from torch import nn
+import torch.nn.functional as F
 import pytorch_lightning as pl
 from torchmetrics import F1Score, Accuracy
 import numpy as np
