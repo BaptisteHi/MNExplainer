@@ -13,24 +13,25 @@ In this file, we will test our explainer by importing a score, creating its grap
 
 """First section : Importing what is necessary"""
 
-score_path = 'cadence_xml_datasets/data/mozart_piano_sonatas/K280-2.musicxml'
+file_path = os.path.dirname(os.path.abspath(__file__))
+score_path = os.path.join(file_path, 'cadence_xml_datasets/data/mozart_piano_sonatas/K280-2.musicxml')
 score_name = score_path.split("/")[-1]
 score = [pt.load_musicxml(score_path), score_name]
 
 #We will store in a 'explain_files' folder all the mei and json files necessary to visualize our graphs and their corresponding music score.
-if not os.path.exists('explain_files/'):
-    os.makedirs('explain_files/')
 
-pt.save_mei(score[0], './explain_files/' + score[1] + '.mei')
+os.makedirs(os.path.join(file_path, 'explain_files'), exist_ok=True)
+
+pt.save_mei(score[0], os.path.join(file_path, 'explain_files', score[1] + '.mei'))
 
 graph, feat_names = create_graph_for_score(score[0], include_cadence=True, include_divs_pq=True, include_id=True, include_ts_beats=True)
-torch.save(graph, './explain_files/' + score[1] + '_graph')
+torch.save(graph, os.path.join(file_path, 'explain_files', score[1] + '_graph'))
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 instance_data = graph
 metadata = graph.metadata()
 #model = torch.load('saved_models/hgnntestmodel', weights_only=False)
-model = CadencePLModel.load_from_checkpoint("models/checkpoints/weights.ckpt").module
+model = CadencePLModel.load_from_checkpoint(os.path.join(file_path, "models/checkpoints/weights.ckpt")).module
 model.eval()
 
 model.to(device)

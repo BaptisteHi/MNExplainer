@@ -213,8 +213,9 @@ class CadenceGNNPytorch(nn.Module):
         x = torch.cat(x, dim=0)
         return x
 
-    def encode(self, x_dict, edge_index_dict, batch_size, neighbor_mask_node, neighbor_mask_edge, batch_dict=None, pitch_spelling=None):
-
+    def encode(self, x_dict, edge_index_dict, batch_size=None, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
+        if batch_size is None:
+            batch_size = x_dict["note"].shape[0]        
 
         if batch_dict is None:
             batch_note = torch.zeros((x_dict["note"].shape[0], ), device=x_dict["note"].device).long()
@@ -246,7 +247,9 @@ class CadenceGNNPytorch(nn.Module):
         x = self.pool_mlp(x)
         return x
 
-    def forward(self, x_dict, edge_index_dict, batch_size, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
+    def forward(self, x_dict, edge_index_dict, batch_size=None, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
+        if batch_size is None:
+            batch_size = x_dict["note"].shape[0]
         if neighbor_mask_node is None:
             neighbor_mask_node = {k: torch.zeros((x_dict[k].shape[0], ), device=x_dict[k].device).long() for k in x_dict}
         if neighbor_mask_edge is None:
