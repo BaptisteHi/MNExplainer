@@ -28,6 +28,21 @@ class PitchEncoder(object):
             10: ["A#", "B-", "C--"],
             11: ["B", "A##", "C-"],
         }
+        self.SPELLING_TO_PC = {
+            "C": 0, "B#": 0, "D--": 0,
+            "C#": 1, "B##": 1, "D-": 1,
+            "D": 2, "C##": 2, "E--": 2,
+            "D#": 3, "E-": 3, "F--": 3,
+            "E": 4, "D##": 4, "F-": 4,
+            "F": 5, "E#": 5, "G--": 5,
+            "F#": 6, "E##": 6, "G-": 6,
+            "G": 7, "F##": 7, "A--": 7,
+            "G#": 8, "A-": 8,
+            "A": 9, "G##": 9,
+            "B--": 9,
+            "A#": 10, "B-": 10, "C--": 10,
+            "B": 11, "A##": 11, "C-": 11
+        }
         self.accepted_pitches = np.array([ii for i in self.PITCHES.values() for ii in i])
         self.KEY_SIGNATURES = list(range(-7, 8))
         self.encode_dim = len(self.accepted_pitches)
@@ -121,6 +136,24 @@ class PitchEncoder(object):
         reindex[accepted_pi2m] = self.encode(transposed_pitches)
         self.transposition_dict[interval_name] = {"reindex": reindex, "accepted_indices": accepted_pi2m}
 
+    def get_pitch_class(self, x):
+        """
+        Get the pitch class of a note.
+
+        Parameters
+        ----------
+        x : numpy array or torch tensor
+            Pitch spelling integer labels.
+        """
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+        # decode the pitch spelling to get the pitch class
+        if np.issubdtype(x.dtype, np.integer):        
+            x = self.decode(x)        
+        # get the pitch class from the pitch spelling vectorized
+        pitch_class = np.vectorize(self.SPELLING_TO_PC.get)(x)
+        return pitch_class
+
 
 class CadenceGNNPytorch(nn.Module):
     def __init__(self, metadata, input_dim, hidden_dim, output_dim, num_layers, dropout=0.5, hybrid=False, use_pitch_spelling=True):
@@ -189,6 +222,8 @@ class CadenceGNNPytorch(nn.Module):
         onset_mask[:batch_size] = True
 
         if self.use_pitch_spelling:
+            if pitch_spelling is None:
+                pitch_spelling = x_dict.get("pitch_spelling", None)
             x_dict["note"] =  self.input_projection(torch.cat((x_dict["note"], self.pitch_spelling_emb(pitch_spelling)), dim=-1))
 
         x = self.gnn(
@@ -208,7 +243,10 @@ class CadenceGNNPytorch(nn.Module):
         x = self.pool_mlp(x)
         return x
 
-    def forward(self, x_dict, edge_index_dict, batch_size, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
+    def forward(self, x_dict, edge_index_dict, batch_size=0, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
+        #adding this
+        batch_size = len(x_dict['note'])
+
         if neighbor_mask_node is None:
             neighbor_mask_node = {k: torch.zeros((x_dict[k].shape[0], ), device=x_dict[k].device).long() for k in x_dict}
         if neighbor_mask_edge is None:
@@ -260,10 +298,11 @@ class CadencePLModel(pl.LightningModule):
         batch_size = batch["note"].batch_size
         batch_dict = batch.batch_dict
         pitch_spelling = batch["note"].pitch_spelling
+        x_dict["pitch_spelling"] = pitch_spelling
         x = self.module.encode(
             x_dict, edge_index_dict, batch_size,
             neighbor_mask_node=neighbor_mask_node, neighbor_mask_edge=neighbor_mask_edge,
-            batch_dict=batch_dict, pitch_spelling=pitch_spelling
+            batch_dict=batch_dict,
         )
         # Trim the labels to the target nodes (i.e. layer 0)
         y = batch["note"].y[:batch_size]

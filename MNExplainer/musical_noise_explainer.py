@@ -9,6 +9,7 @@ from graphmuse.utils.graph_utils import trim_to_layer
 from math import tanh
 from utils.graph import hgraph_to_networkx
 from utils.score import midi_pitch_from_spelling
+from models.cadence_model import PitchEncoder
 
 from tqdm import tqdm
 
@@ -90,8 +91,13 @@ class MNExplainer(ExplainerAlgorithm):
         the factor balancing the importance between the minimality and the counterfactual aspect of the prediction in the loss function.
     """
 
-    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=True):
+    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=False, seed=0):
         super().__init__()
+
+        # Removing the pitch spelling from the metadata since this is not a node type but some note related information
+        # stored in x_dict
+        metadata[0].remove("pitch_spelling")
+
 
         self.metadata = metadata
         self.num_feat = num_feat
@@ -103,9 +109,10 @@ class MNExplainer(ExplainerAlgorithm):
         self.balance_factor = balance_factor
         self.uses_pitch_spelling = uses_pitch_spelling
 
-        self.mnmodel = MNModel_(metadata, num_feat, num_layers)
+        self.pitch_encoder = PitchEncoder()
+        self.mnmodel = MNModel_(self.metadata, self.num_feat, self.num_layers, self.pitch_encoder)
 
-        torch.manual_seed(0)
+        torch.manual_seed(seed)
 
     def forward(self, graph, desired_classification, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, forbidden_op=[], **kwargs): 
         base_graph = copy.deepcopy(graph)
@@ -379,15 +386,18 @@ class MNExplainer(ExplainerAlgorithm):
             # we put 0 as a desired classification for the new note because we won't look at it anyways
 
         target_mask = torch.tensor([i == target for i in range(n_notes)])
-        d = self._dist_from_change_naive(change, graph)
-        for chg in changes:
-            if chg != None:
-                d += self._dist_from_change_naive(chg, graph)
+        #d = self._dist_from_change_naive(change, graph)
+        #for chg in changes:
+        #    if chg != None:
+        #        d += self._dist_from_change_naive(chg, graph)
 
         # print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
         # print(f'classification avec changement{pred.argmax(dim=1)[target]}')
 
-        _ = self._dist_from_change(changes, graph, input_graph, computation_notes)
+        training_changes = copy.deepcopy(changes)
+        training_changes.append(change)
+
+        d = self._dist_from_change(training_changes, graph, input_graph, computation_notes)
 
         return balance_factor * ent(pred[target_mask], desired_pred[target_mask]) + d
 
@@ -409,12 +419,13 @@ class MNModel_(torch.nn.Module):
         the number of convolution layers for the encoders in the explainer.   
     """
 
-    def __init__(self, metadata, num_feat, num_layers):
+    def __init__(self, metadata, num_feat, num_layers, pitchencoder):
         super().__init__()
 
         self.metadata = metadata
         self.num_feat = num_feat
         self.num_layers = num_layers
+        self.pitchencoder = pitchencoder
 
         """
         Encoder for choosing the operation to perform when unspecified. The loss depends on the nature of the operation because of the
@@ -430,13 +441,13 @@ class MNModel_(torch.nn.Module):
         """Encoders for the pitch update operator"""
         self.pitch_change_modules = torch.nn.ModuleDict({
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
-            'spelling' : EncodingGNN_(metadata, num_feat, 38, num_layers)
+            'spelling' : EncodingGNN_(metadata, num_feat, 35, num_layers)
         })
 
         """Encoders for the adding note operator"""
         self.add_note_modules = torch.nn.ModuleDict({
             'index' : EncodingGNN_(metadata, num_feat, 2, num_layers),
-            'spelling' : EncodingGNN_(metadata, num_feat, 38, num_layers),
+            'spelling' : EncodingGNN_(metadata, num_feat, 35, num_layers),
             'octave' : EncodingGNN_(metadata, num_feat, 10, num_layers),
             'onset' : EncodingGNN_(metadata, num_feat, 2, num_layers),
             'duration' : EncodingGNN_(metadata, num_feat, 4, num_layers)
@@ -486,14 +497,15 @@ class MNModel_(torch.nn.Module):
                 computation_notes_scores = torch.sum(embeddings_for_note_index['note'], dim=1)[computation_notes_mask]
                 note_index = computation_notes[torch.argmax(computation_notes_scores)]
                 # note_index.to(x_dict['note'].device)
-                new_pitch_spelling = torch.argmax(embeddings_for_new_pitch_spelling['note'][note_index])
-                new_pitch = midi_pitch_from_spelling(int(new_pitch_spelling))
+                new_pitch_spelling_encoding = torch.argmax(embeddings_for_new_pitch_spelling['note'][note_index])
+                new_pitch_spelling = self.pitchencoder.classes_[new_pitch_spelling_encoding]
+                new_pitch = self.pitchencoder.SPELLING_TO_PC[new_pitch_spelling]
                 # new_pitch.to(x_dict['note'].device)
 
-                new_x_dict = self._update_pitch(new_pitch, note_index, x_dict)
+                new_x_dict = self._update_pitch(new_pitch, new_pitch_spelling_encoding, note_index, x_dict)
                 new_edge_index_dict = dict(edge_index_dict)
 
-                update = Change_('pitch', note_index=note_index, pitch=new_pitch)
+                update = Change_('pitch', note_index=note_index, pitch=new_pitch, spelling=new_pitch_spelling)
 
                 return new_x_dict, new_edge_index_dict, ts_beats, onset_div, duration_div, update
             
@@ -550,8 +562,9 @@ class MNModel_(torch.nn.Module):
                 
                 elif isinstance(target, int):
                     note_index = target
-                    new_note_pitch_spelling = torch.argmax(embeddings_for_new_note_pitch_spelling['note'][note_index])
-                    new_note_pitch = midi_pitch_from_spelling(int(new_note_pitch_spelling))
+                    new_note_pitch_spelling_encoding = torch.argmax(embeddings_for_new_note_pitch_spelling['note'][note_index])
+                    new_note_pitch_spelling = self.pitchencoder.classes_[new_note_pitch_spelling_encoding]
+                    new_note_pitch = self.pitchencoder.SPELLING_TO_PC(new_note_pitch_spelling)
                     new_note_octave = torch.argmax(embeddings_for_new_note_octave['note'][note_index])
                     computation_notes_scores_onset = torch.sum(embeddings_for_new_note_onset['note'], dim=1)[computation_notes_mask]
                     onset_note = computation_notes[torch.argmax(computation_notes_scores_onset)]
@@ -586,7 +599,8 @@ class MNModel_(torch.nn.Module):
                 # prediction to make sense.
 
                 new_x_dict, new_edge_index_dict, noisy_onset_div, noisy_duration_div, removed_edges, added_edges = self._add_note(
-                    x_dict, edge_index_dict, new_note_onset, new_note_duration, onset_div, duration_div, feature_vector, not_removed_notes)
+                    x_dict, edge_index_dict, new_note_onset, new_note_duration,
+                    onset_div, duration_div, feature_vector, new_note_pitch_spelling_encoding, not_removed_notes)
 
                 try:
                     ts_beats.to(x_dict['note'].device)
@@ -599,7 +613,8 @@ class MNModel_(torch.nn.Module):
                                  pitch=new_note_pitch, 
                                  octave=new_note_octave, 
                                  onset=new_note_onset, 
-                                 duration=new_note_duration, 
+                                 duration=new_note_duration,
+                                 spelling=new_note_pitch_spelling,
                                  removed_edges=removed_edges, 
                                  added_edges=added_edges)
 
@@ -624,12 +639,17 @@ class MNModel_(torch.nn.Module):
             case _:
                 assert False, 'The operation provided is not implemented. Please provide an operation that is either remove, add, onset, duration or pitch.'
 
-    def _add_note(self, x_dict, edge_index_dict, onset, duration, onset_div, duration_div, feature_vector, not_removed_notes):
+    def _add_note(self, x_dict, edge_index_dict, onset, duration, onset_div, duration_div, feature_vector, pitch_spelling, not_removed_notes):
         # the new note will be attributed the last index not to mess up the already existing indices
         device = x_dict['note'].device
         new_note_index = len(x_dict['note'])
         new_x_dict = dict(x_dict)
-        new_x_dict['note'] = torch.cat((x_dict['note'],feature_vector),0)
+        new_x_dict['note'] = torch.cat((x_dict['note'], feature_vector),0)
+        try:
+            new_x_dict['pitch_spelling'] = torch.cat((x_dict['pitch_spelling'].clone(), torch.tensor([pitch_spelling], device=device, dtype=int)), dim=-1)
+        except:
+            pass
+            # pitch spelling not supported for this model
         new_x_dict['note'].to(x_dict['note'].device)
         
         # noisy_onset_div = np.concatenate((onset_div, np.array([onset])),axis=None)
@@ -744,10 +764,17 @@ class MNModel_(torch.nn.Module):
 
         return new_edge_index_dict, removed_edges, added_edges
     
-    def _update_pitch(self, new_pitch, note_index, x_dict):
+    def _update_pitch(self, new_pitch, new_pitch_spelling, note_index, x_dict):
         new_x_dict = dict(x_dict)
+
         for pitch in range(12):
             new_x_dict['note'][note_index][3+pitch] = float(pitch==new_pitch)
+        try:    
+            new_x_dict["pitch_spelling"][note_index] = new_pitch_spelling
+        except:
+            pass
+            # pitch spelling not supported by the explained model
+        
         return new_x_dict
     
     def _update_onset(self, onset, note_index, onset_div, duration_div, edge_index_dict, not_removed_notes):
