@@ -133,6 +133,7 @@ def create_graph_for_score(score, pitch_encoder, include_cadence=False, include_
     if include_divs_pq:    
         graph['note'].divs_pq = note_array['divs_pq']
     graph["note"].pitch_spelling = torch.tensor(pitch_encoder.encode(score[0].note_array(include_pitch_spelling=True))).long()
+    graph["pitch_spelling"].x = graph["note"].pitch_spelling
     return graph, complete_features_names
 
 def hgraph_to_networkx(graph : HeteroData, computation_notes, edge_tuple):
