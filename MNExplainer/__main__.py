@@ -26,7 +26,7 @@ os.makedirs(os.path.join(file_path, 'explain_files'), exist_ok=True)
 pt.save_mei(score[0], os.path.join(file_path, 'explain_files', score[1] + '.mei'))
 
 
-graph, feat_names = create_graph_for_score(score[0], include_cadence=True, include_divs_pq=True, include_id=True, include_ts_beats=True, pitch_encoder=pitch_encoder)
+graph, feat_names = create_graph_for_score(score[0], pitch_encoder, include_cadence=True, include_divs_pq=True, include_id=True, include_ts_beats=True)
 torch.save(graph, os.path.join(file_path, 'explain_files', score[1] + '_graph'))
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -67,6 +67,7 @@ target=274
 
 explanation, _ = visualize_explanation_files(
     score[0],
+    pitch_encoder,
     target,
     explainer,
     ['onset', 'duration', 'add'],
