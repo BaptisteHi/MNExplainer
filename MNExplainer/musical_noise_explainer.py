@@ -94,11 +94,6 @@ class MNExplainer(ExplainerAlgorithm):
     def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=False, seed=0):
         super().__init__()
 
-        # Removing the pitch spelling from the metadata since this is not a node type but some note related information
-        # stored in x_dict
-        metadata[0].remove("pitch_spelling")
-
-
         self.metadata = metadata
         self.num_feat = num_feat
         self.pred_level = pred_level
