@@ -172,6 +172,7 @@ class CadenceGNNPytorch(nn.Module):
                 nn.LayerNorm(input_dim)
             )
         hidden_dim = hidden_dim // 2
+        self.num_layers = num_layers
         self.norm = nn.LayerNorm(hidden_dim)
         self.hybrid = hybrid
         if self.hybrid:
@@ -254,6 +255,8 @@ class CadenceGNNPytorch(nn.Module):
             neighbor_mask_node = {k: torch.zeros((x_dict[k].shape[0], ), device=x_dict[k].device).long() for k in x_dict}
         if neighbor_mask_edge is None:
             neighbor_mask_edge = {k: torch.zeros((edge_index_dict[k].shape[-1], ), device=edge_index_dict[k].device).long() for k in edge_index_dict}
+        if pitch_spelling is None:
+            pitch_spelling = x_dict.get("pitch_spelling", None)
         x = self.encode(x_dict, edge_index_dict, batch_size, neighbor_mask_node, neighbor_mask_edge, batch_dict, pitch_spelling)
         logits = self.cad_clf(x)
         return torch.softmax(logits, dim=-1)

@@ -95,7 +95,7 @@ def int_to_id(n):
         id = f'p{part_number}n{note_number}'
         return id 
 
-def create_graph_for_score(score, include_cadence=False, include_id=False, include_ts_beats=False, include_divs_pq=False, add_beats=False):
+def create_graph_for_score(score, pitch_encoder, include_cadence=False, include_id=False, include_ts_beats=False, include_divs_pq=False, add_beats=False):
     """
     The function for creating a heterogeneous graph out of a score object.
 
@@ -112,7 +112,7 @@ def create_graph_for_score(score, include_cadence=False, include_id=False, inclu
     note_array = score.note_array(include_time_signature=True, include_metrical_position=True, include_pitch_spelling=True)
     # cad_features, cad_f_names = st.descriptors.utils.cadence_features.get_cad_features(score[-1], note_array)
     # complete_features = np.concatenate((features, cad_features), axis=1)
-    complete_features = features
+    complete_features = features    
     complete_features_names = f_names # + cad_f_names
     graph = gm.create_score_graph(complete_features, score.note_array(), add_beats=add_beats)
     score_cadences = score[-1].cadences
@@ -132,6 +132,7 @@ def create_graph_for_score(score, include_cadence=False, include_id=False, inclu
         graph['note'].ts_beats = note_array['ts_beats']
     if include_divs_pq:    
         graph['note'].divs_pq = note_array['divs_pq']
+    graph["note"].pitch_spelling = torch.tensor(pitch_encoder.encode(score[0].note_array(include_pitch_spelling=True))).long()
     return graph, complete_features_names
 
 def hgraph_to_networkx(graph : HeteroData, computation_notes, edge_tuple):

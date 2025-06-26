@@ -2,7 +2,7 @@ import partitura as pt
 from utils.graph import create_graph_for_score
 from utils.score import visualize_explanation_files
 from musical_noise_explainer import MNExplainer
-from models.cadence_model import CadencePLModel
+from models.cadence_model import CadencePLModel, PitchEncoder
 import torch
 import os
 
@@ -16,6 +16,7 @@ In this file, we will test our explainer by importing a score, creating its grap
 file_path = os.path.dirname(os.path.abspath(__file__))
 score_path = os.path.join(file_path, 'cadence_xml_datasets/data/mozart_piano_sonatas/K280-2.musicxml')
 score_name = score_path.split("/")[-1]
+pitch_encoder = PitchEncoder()
 score = [pt.load_musicxml(score_path), score_name]
 
 #We will store in a 'explain_files' folder all the mei and json files necessary to visualize our graphs and their corresponding music score.
@@ -24,7 +25,8 @@ os.makedirs(os.path.join(file_path, 'explain_files'), exist_ok=True)
 
 pt.save_mei(score[0], os.path.join(file_path, 'explain_files', score[1] + '.mei'))
 
-graph, feat_names = create_graph_for_score(score[0], include_cadence=True, include_divs_pq=True, include_id=True, include_ts_beats=True)
+
+graph, feat_names = create_graph_for_score(score[0], include_cadence=True, include_divs_pq=True, include_id=True, include_ts_beats=True, pitch_encoder=pitch_encoder)
 torch.save(graph, os.path.join(file_path, 'explain_files', score[1] + '_graph'))
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -40,7 +42,9 @@ instance_data.to(device)
 """Finding an accurate prediction of the loaded model in the instance_data graph"""
 
 def finding_accurate_predictions(data, model, target, count_label_zero=False, **kwargs):
-    accurate = model(data.x_dict, data.edge_index_dict, **kwargs).argmax(dim=1) == target
+    x_dict = data.x_dict
+    x_dict["pitch_spelling"] = data["note"].pitch_spelling
+    accurate = model(x_dict, data.edge_index_dict, **kwargs).argmax(dim=1) == target
     if not count_label_zero:
         accurate = torch.logical_and(accurate, target > 0)
     return accurate
