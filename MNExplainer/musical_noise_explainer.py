@@ -91,8 +91,10 @@ class MNExplainer(ExplainerAlgorithm):
         the factor balancing the importance between the minimality and the counterfactual aspect of the prediction in the loss function.
     """
 
-    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=False, seed=0):
+    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=False, seed=0, accepted_values=['note']):
         super().__init__()
+
+        metadata = ([el for el in metadata[0] if el in accepted_values], metadata[1])
 
         self.metadata = metadata
         self.num_feat = num_feat
@@ -248,7 +250,6 @@ class MNExplainer(ExplainerAlgorithm):
         # not_removed_notes = [True for i in range(len(graph['note'].x))]# torch.tensor([True for i in range(len(graph['note'].x))], device=device)
         not_removed_notes = torch.ones(len(graph['note'].x), dtype=torch.bool, device=device).tolist()
         x_dict = graph.x_dict
-        x_dict["pitch_spelling"] = graph["note"].pitch_spelling
         for _ in tqdm(range(1, self.epochs + 1)):
             mnmodel.train()
             optimizer.zero_grad()
@@ -402,10 +403,10 @@ class MNExplainer(ExplainerAlgorithm):
         # improved version of target_mask 
         target_mask = torch.zeros(n_notes, dtype=torch.bool, device=desired_pred.device)
         target_mask[target] = True
-        #d = self._dist_from_change_naive(change, graph)
-        #for chg in changes:
-        #    if chg != None:
-        #        d += self._dist_from_change_naive(chg, graph)
+        d = self._dist_from_change_naive(change, graph)
+        for chg in changes:
+            if chg != None:
+                d += self._dist_from_change_naive(chg, graph)
 
         # print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
         # print(f'classification avec changement{pred.argmax(dim=1)[target]}')
@@ -413,7 +414,7 @@ class MNExplainer(ExplainerAlgorithm):
         training_changes = copy.deepcopy(changes)
         training_changes.append(change)
 
-        d = self._dist_from_change(training_changes, graph, input_graph, computation_notes)
+        # d = self._dist_from_change(training_changes, graph, input_graph, computation_notes)
 
         return balance_factor * ent(pred[target_mask], desired_pred[target_mask]) + d
 
@@ -505,7 +506,7 @@ class MNModel_(torch.nn.Module):
         computation_notes.sort()
         # computation_notes_mask = torch.tensor([i in computation_notes for i in range(len(x_dict['note']))])
         # improved version of the computation notes mask        
-        computation_notes_mask = torch.isin(computation_notes, torch.arange(len(x_dict['note']), device=x_dict['note'].device))
+        computation_notes_mask = torch.isin(torch.arange(len(x_dict['note']), device=x_dict['note'].device), torch.tensor(computation_notes, device=x_dict['note'].device))
 
         match operation:
             case 'pitch':
@@ -582,7 +583,7 @@ class MNModel_(torch.nn.Module):
                     note_index = target
                     new_note_pitch_spelling_encoding = torch.argmax(embeddings_for_new_note_pitch_spelling['note'][note_index])
                     new_note_pitch_spelling = self.pitchencoder.classes_[new_note_pitch_spelling_encoding]
-                    new_note_pitch = self.pitchencoder.SPELLING_TO_PC(new_note_pitch_spelling)
+                    new_note_pitch = self.pitchencoder.SPELLING_TO_PC[new_note_pitch_spelling]
                     new_note_octave = torch.argmax(embeddings_for_new_note_octave['note'][note_index])
                     computation_notes_scores_onset = torch.sum(embeddings_for_new_note_onset['note'], dim=1)[computation_notes_mask]
                     onset_note = computation_notes[torch.argmax(computation_notes_scores_onset)]
