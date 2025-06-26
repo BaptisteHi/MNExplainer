@@ -123,24 +123,33 @@ class MNExplainer(ExplainerAlgorithm):
         if target is not None:
             computation_notes = []
             base_graph['note'].x.requires_grad = True
-            pred = self.model(base_graph.x_dict, base_graph.edge_index_dict, **kwargs)
+            x_dict = base_graph.x_dict
+            x_dict["pitch_spelling"] = base_graph["note"].pitch_spelling
+            pred = self.model(x_dict, base_graph.edge_index_dict, **kwargs)
             toy_loss = torch.nn.CrossEntropyLoss()
             
-            if isinstance(target, int):
-                target_mask = torch.tensor([i == target for i in range(len(base_graph['note'].x))], device=device)
-                toy_ground_truth = torch.tensor([0 for i in range(len(base_graph['note'].x))], device=device)
+            if isinstance(target, int):                
+                target_mask = torch.zeros(len(base_graph['note'].x), dtype=torch.bool, device=device)
+                target_mask[target] = True                
+                toy_ground_truth = torch.zeros(len(base_graph['note'].x), dtype=torch.long, device=device)
                 loss = toy_loss(pred[target_mask], toy_ground_truth[target_mask])
                 loss.backward()
                 grad = base_graph['note'].x.grad
-                for note in range(len(grad)):
-                    for feature_g in grad[note]:
-                        if feature_g != 0.0:
-                            computation_notes.append(note)
-                        break # to avoid adding the same note multiple times.
+                # One line replacement for the below loop code segment
+                new_notes = torch.nonzero(torch.any(grad != 0.0, dim=1), as_tuple=True)[0].tolist()
+                computation_notes += new_notes
+                # # 
+                # for note in range(len(grad)):
+                #     for feature_g in grad[note]:
+                #         if feature_g != 0.0:
+                #             computation_notes.append(note)
+                #         break # to avoid adding the same note multiple times.
 
-            elif isinstance(target, tuple):
-                target_mask = torch.tensor([(i == target[0]) or (i == target[1]) for i in range(len(base_graph['note'].x))])
-                toy_ground_truth = torch.tensor([0 for i in range(base_graph.num_edges)])
+            elif isinstance(target, tuple):                
+                target_mask = torch.zeros(len(base_graph['note'].x), dtype=torch.bool, device=device)
+                target_mask[target[0]] = True
+                target_mask[target[1]] = True
+                toy_ground_truth = torch.zeros(base_graph.num_edges, dtype=torch.long, device=device)
                 loss = toy_loss(pred[target_mask], toy_ground_truth[target_mask])
                 loss.backward()
 
@@ -237,11 +246,13 @@ class MNExplainer(ExplainerAlgorithm):
         optimizer = torch.optim.Adam(mnmodel.parameters(), lr=self.lr, weight_decay=0.0005)
         device = graph.x_dict['note'].device
         not_removed_notes = [True for i in range(len(graph['note'].x))]# torch.tensor([True for i in range(len(graph['note'].x))], device=device)
+        x_dict = graph.x_dict
+        x_dict["pitch_spelling"] = graph["note"].pitch_spelling
         for _ in tqdm(range(1, self.epochs + 1)):
             mnmodel.train()
             optimizer.zero_grad()
             noisy_x_dict, noisy_edge_index_dict, _, _, _, change = self.mnmodel(
-                    graph.x_dict,
+                    x_dict,
                     graph.edge_index_dict,
                     graph['note'].ts_beats,
                     graph['note'].divs_pq,

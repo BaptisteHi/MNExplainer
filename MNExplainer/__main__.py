@@ -51,15 +51,15 @@ def finding_accurate_predictions(data, model, target, count_label_zero=False, **
 
 accurate_positive_cadence_mask = finding_accurate_predictions(instance_data, model, instance_data['note'].cadences)
 first_cad = 0
-for j in range(len(accurate_positive_cadence_mask)):
-    if accurate_positive_cadence_mask[j] > 0:
-        first_cad = j
-        break
+# find the the positive cadence indices
+indices = torch.where(accurate_positive_cadence_mask > 0)[0]
+assert len(indices) > 0, "No cadence predictions found in the model's output."
+first_cad = indices[0].item()
 
 """Explaining"""
 
 num_feat = instance_data['note'].x.size(dim=1)
-explained_predictions_indices = [i for i in range(len(accurate_positive_cadence_mask)) if accurate_positive_cadence_mask[i] == 1]
+explained_predictions_indices = indices
 explainer = MNExplainer(model, metadata, num_feat, 'node', num_layers=model.num_layers, epochs=150, balance_factor=2.0)
 desired_classification = 0
 target=explained_predictions_indices[0]
