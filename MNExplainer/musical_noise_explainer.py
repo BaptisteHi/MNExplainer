@@ -245,7 +245,8 @@ class MNExplainer(ExplainerAlgorithm):
 
         optimizer = torch.optim.Adam(mnmodel.parameters(), lr=self.lr, weight_decay=0.0005)
         device = graph.x_dict['note'].device
-        not_removed_notes = [True for i in range(len(graph['note'].x))]# torch.tensor([True for i in range(len(graph['note'].x))], device=device)
+        # not_removed_notes = [True for i in range(len(graph['note'].x))]# torch.tensor([True for i in range(len(graph['note'].x))], device=device)
+        not_removed_notes = torch.ones(len(graph['note'].x), dtype=torch.bool, device=device).tolist()
         x_dict = graph.x_dict
         x_dict["pitch_spelling"] = graph["note"].pitch_spelling
         for _ in tqdm(range(1, self.epochs + 1)):
@@ -315,8 +316,15 @@ class MNExplainer(ExplainerAlgorithm):
         dnodes = 0
         dgraph = 0
         computation_notes.sort()
-        computation_notes_mask_i = torch.tensor([i in computation_notes for i in range(len(input_graph.x_dict['note']))])
-        computation_notes_mask_n = torch.tensor([i in computation_notes for i in range(len(graph.x_dict['note']))])
+        computation_notes_tensor = torch.tensor(computation_notes, device=input_graph.x_dict['note'].device)
+        computation_notes_mask_i = torch.zeros(len(input_graph.x_dict['note']), dtype=torch.bool, device=input_graph.x_dict['note'].device)        
+        computation_notes_mask_i[computation_notes_tensor[computation_notes_tensor < len(input_graph.x_dict['note'])]] = True
+
+        computation_notes_mask_n = torch.zeros(len(graph.x_dict['note']), dtype=torch.bool, device=graph.x_dict['note'].device)
+        computation_notes_mask_n[computation_notes_tensor[computation_notes_tensor < len(graph.x_dict['note'])]] = True
+        # Previous code to compute the mask for the computation notes
+        # computation_notes_mask_i = torch.tensor([i in computation_notes for i in range(len(input_graph.x_dict['note']))])
+        # computation_notes_mask_n = torch.tensor([i in computation_notes for i in range(len(graph.x_dict['note']))])
 
         # computing Manhattan distance between the input and the explanation computation subgraphs
         dnodes = torch.sum(torch.abs(input_graph.x_dict['note'][computation_notes_mask_i] - graph.x_dict['note'][computation_notes_mask_n]))
@@ -390,8 +398,10 @@ class MNExplainer(ExplainerAlgorithm):
             n_notes += 1
             desired_pred = torch.cat((desired_pred, torch.tensor([0], device=desired_pred.device)))
             # we put 0 as a desired classification for the new note because we won't look at it anyways
-
-        target_mask = torch.tensor([i == target for i in range(n_notes)])
+        
+        # improved version of target_mask 
+        target_mask = torch.zeros(n_notes, dtype=torch.bool, device=desired_pred.device)
+        target_mask[target] = True
         #d = self._dist_from_change_naive(change, graph)
         #for chg in changes:
         #    if chg != None:
@@ -493,7 +503,9 @@ class MNModel_(torch.nn.Module):
             operation = possible_operations[op_idx]
 
         computation_notes.sort()
-        computation_notes_mask = torch.tensor([i in computation_notes for i in range(len(x_dict['note']))])
+        # computation_notes_mask = torch.tensor([i in computation_notes for i in range(len(x_dict['note']))])
+        # improved version of the computation notes mask        
+        computation_notes_mask = torch.isin(computation_notes, torch.arange(len(x_dict['note']), device=x_dict['note'].device))
 
         match operation:
             case 'pitch':
