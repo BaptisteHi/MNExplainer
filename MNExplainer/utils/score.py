@@ -2,7 +2,6 @@ import partitura.score as scr
 import partitura as pt
 from utils.graph import save_pyg_graph_as_json, create_graph_for_score
 
-
 def _spelling_from_midi_pitch(pitch):
     match pitch:
         case 0:
@@ -206,7 +205,7 @@ def update_score(score, change, score_indices, current_next_available) -> scr.Sc
         case _:
             assert False, 'the change does not correspond to a well known operation'
 
-def visualize_explanation_files(score, target, explainer, num_expl, desired_classification, path='./explain_files/', score_name = 'score', device='cpu'):
+def visualize_explanation_files(score, pitch_encoder, target, explainer, num_expl, desired_classification, path='./explain_files/', score_name = 'score', device='cpu'):
     """
     Produce the files for visualizing the num_expl explanations produced by the provided explainer on the prediction associated
     with the given target and made by the GNN model associated with the explainer.
@@ -229,7 +228,7 @@ def visualize_explanation_files(score, target, explainer, num_expl, desired_clas
     device (optional) : string
         the device of the explained model, so the graph produced can be moved accordingly
     """
-    graph, _ = create_graph_for_score(score, include_cadence=True, include_id=True, include_ts_beats=True, include_divs_pq=True)
+    graph, _ = create_graph_for_score(score, pitch_encoder, include_cadence=True, include_id=True, include_ts_beats=True, include_divs_pq=True)
     graph.to(device)
     ids = graph['note'].id.tolist()
     explanation, changes = explainer(graph, desired_classification, target=target, num_expl=num_expl, retrieve_changes=True)
