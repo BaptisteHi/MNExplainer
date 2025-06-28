@@ -95,7 +95,7 @@ def int_to_id(n):
         id = f'p{part_number}n{note_number}'
         return id 
 
-def create_graph_for_score(score, pitch_encoder, include_cadence=False, include_id=False, include_ts_beats=False, include_divs_pq=False, add_beats=False):
+def create_graph_for_score(score, pitch_encoder, include_cadence=False, include_id=False, include_ts=True, include_divs_pq=True, add_beats=False):
     """
     The function for creating a heterogeneous graph out of a score object.
 
@@ -128,8 +128,11 @@ def create_graph_for_score(score, pitch_encoder, include_cadence=False, include_
     if include_id:
         graph["note"].id = note_array['id']
         # graphs created using this bug the dataloader process for the training because of the strings
-    if include_ts_beats:
-        graph['note'].ts_beats = note_array['ts_beats']
+    if include_ts:
+        time_sig = score[0].time_sigs[0]
+        graph['note'].beats = np.ones(n, dtype=int) * time_sig.beats
+        graph['note'].beat_type = np.ones(n, dtype=int) * time_sig.beat_type
+        # graph['note'].ts_beats = note_array['ts_beats']
     if include_divs_pq:    
         graph['note'].divs_pq = note_array['divs_pq']
     graph["note"].pitch_spelling = torch.tensor(pitch_encoder.encode(score[0].note_array(include_pitch_spelling=True))).long()
