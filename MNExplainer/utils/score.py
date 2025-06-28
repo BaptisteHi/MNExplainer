@@ -228,17 +228,19 @@ def visualize_explanation_files(score, pitch_encoder, target, explainer, num_exp
     device (optional) : string
         the device of the explained model, so the graph produced can be moved accordingly
     """
-    graph, _ = create_graph_for_score(score, pitch_encoder, include_cadence=True, include_id=True, include_ts_beats=True, include_divs_pq=True)
+    graph, _ = create_graph_for_score(score, pitch_encoder, include_cadence=True, include_id=True, include_ts=True, include_divs_pq=True)
     graph.to(device)
     ids = graph['note'].id.tolist()
-    explanation, changes = explainer(graph, desired_classification, target=target, num_expl=num_expl, retrieve_changes=True)
+    explanation, changes, dist = explainer(graph, desired_classification, target=target, num_expl=num_expl, retrieve_changes=True, retrieve_dist=True)
     current_next_available = None
     graph.to('cpu')
     for i,graphexp in enumerate(explanation):
 
         # generating mei file
         change = changes[i]
+        d = dist[i]
         print(change)
+        print(f"Distance from input graph for this explanation : {d}")
         if change == None:
             continue
         else:
