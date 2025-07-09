@@ -153,7 +153,7 @@ class PitchEncoder(object):
         # get the pitch class from the pitch spelling vectorized
         pitch_class = np.vectorize(self.SPELLING_TO_PC.get)(x)
         return pitch_class
-
+    
 
 class CadenceGNNPytorch(nn.Module):
     def __init__(self, metadata, input_dim, hidden_dim, output_dim, num_layers, dropout=0.5, hybrid=False, use_pitch_spelling=True):
@@ -172,6 +172,7 @@ class CadenceGNNPytorch(nn.Module):
                 nn.LayerNorm(input_dim)
             )
         hidden_dim = hidden_dim // 2
+        self.num_layers = num_layers
         self.norm = nn.LayerNorm(hidden_dim)
         self.hybrid = hybrid
         if self.hybrid:
@@ -213,7 +214,10 @@ class CadenceGNNPytorch(nn.Module):
         x = torch.cat(x, dim=0)
         return x
 
-    def encode(self, x_dict, edge_index_dict, batch_size, neighbor_mask_node, neighbor_mask_edge, batch_dict=None, pitch_spelling=None):
+    def encode(self, x_dict, edge_index_dict, batch_size=None, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
+        if batch_size is None:
+            batch_size = x_dict["note"].shape[0]        
+
         if batch_dict is None:
             batch_note = torch.zeros((x_dict["note"].shape[0], ), device=x_dict["note"].device).long()
         else:
@@ -221,9 +225,10 @@ class CadenceGNNPytorch(nn.Module):
         onset_mask = torch.zeros_like(batch_note).bool()
         onset_mask[:batch_size] = True
 
-        if self.use_pitch_spelling:
+        if self.use_pitch_spelling: 
             if pitch_spelling is None:
                 pitch_spelling = x_dict.get("pitch_spelling", None)
+
             x_dict["note"] =  self.input_projection(torch.cat((x_dict["note"], self.pitch_spelling_emb(pitch_spelling)), dim=-1))
 
         x = self.gnn(
@@ -243,14 +248,15 @@ class CadenceGNNPytorch(nn.Module):
         x = self.pool_mlp(x)
         return x
 
-    def forward(self, x_dict, edge_index_dict, batch_size=0, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
-        #adding this
-        batch_size = len(x_dict['note'])
-
+    def forward(self, x_dict, edge_index_dict, batch_size=None, neighbor_mask_node=None, neighbor_mask_edge=None, batch_dict=None, pitch_spelling=None):
+        if batch_size is None:
+            batch_size = x_dict["note"].shape[0]
         if neighbor_mask_node is None:
             neighbor_mask_node = {k: torch.zeros((x_dict[k].shape[0], ), device=x_dict[k].device).long() for k in x_dict}
         if neighbor_mask_edge is None:
             neighbor_mask_edge = {k: torch.zeros((edge_index_dict[k].shape[-1], ), device=edge_index_dict[k].device).long() for k in edge_index_dict}
+        if pitch_spelling is None:
+            pitch_spelling = x_dict.get("pitch_spelling", None)
         x = self.encode(x_dict, edge_index_dict, batch_size, neighbor_mask_node, neighbor_mask_edge, batch_dict, pitch_spelling)
         logits = self.cad_clf(x)
         return torch.softmax(logits, dim=-1)
@@ -302,7 +308,7 @@ class CadencePLModel(pl.LightningModule):
         x = self.module.encode(
             x_dict, edge_index_dict, batch_size,
             neighbor_mask_node=neighbor_mask_node, neighbor_mask_edge=neighbor_mask_edge,
-            batch_dict=batch_dict,
+            batch_dict=batch_dict
         )
         # Trim the labels to the target nodes (i.e. layer 0)
         y = batch["note"].y[:batch_size]

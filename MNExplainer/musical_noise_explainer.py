@@ -91,13 +91,10 @@ class MNExplainer(ExplainerAlgorithm):
         the factor balancing the importance between the minimality and the counterfactual aspect of the prediction in the loss function.
     """
 
-    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=False, seed=0):
+    def __init__(self, model, metadata, num_feat, pred_level, num_layers=3, epochs=50, lr=0.1, balance_factor=1.0, uses_pitch_spelling=False, seed=0, accepted_values=['note']):
         super().__init__()
 
-        # Removing the pitch spelling from the metadata since this is not a node type but some note related information
-        # stored in x_dict
-        metadata[0].remove("pitch_spelling")
-
+        metadata = ([el for el in metadata[0] if el in accepted_values], metadata[1])
 
         self.metadata = metadata
         self.num_feat = num_feat
@@ -114,10 +111,11 @@ class MNExplainer(ExplainerAlgorithm):
 
         torch.manual_seed(seed)
 
-    def forward(self, graph, desired_classification, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, forbidden_op=[], **kwargs): 
+    def forward(self, graph, desired_classification, target:Union[int, Tuple]=None, num_expl:Union[int, List]=1, retrieve_changes=False, retrieve_dist=False, forbidden_op=[], **kwargs): 
         base_graph = copy.deepcopy(graph)
-        explanations = [base_graph]
+        input_graph = copy.deepcopy(graph)
         device = base_graph.x_dict['note'].device
+        explanations = [graph]
         self.mnmodel.to(device)
         num_notes = len(base_graph.x_dict['note'])
         not_removed_notes = [True for i in range(num_notes)]# torch.tensor([True for i in range(len(graph['note'].x))], device=device)
@@ -128,24 +126,33 @@ class MNExplainer(ExplainerAlgorithm):
         if target is not None:
             computation_notes = []
             base_graph['note'].x.requires_grad = True
-            pred = self.model(base_graph.x_dict, base_graph.edge_index_dict, **kwargs)
+            x_dict = base_graph.x_dict
+            x_dict["pitch_spelling"] = base_graph["note"].pitch_spelling
+            pred = self.model(x_dict, base_graph.edge_index_dict, **kwargs)
             toy_loss = torch.nn.CrossEntropyLoss()
             
-            if isinstance(target, int):
-                target_mask = torch.tensor([i == target for i in range(len(base_graph['note'].x))], device=device)
-                toy_ground_truth = torch.tensor([0 for i in range(len(base_graph['note'].x))], device=device)
+            if isinstance(target, int):                
+                target_mask = torch.zeros(len(base_graph['note'].x), dtype=torch.bool, device=device)
+                target_mask[target] = True                
+                toy_ground_truth = torch.zeros(len(base_graph['note'].x), dtype=torch.long, device=device)
                 loss = toy_loss(pred[target_mask], toy_ground_truth[target_mask])
                 loss.backward()
                 grad = base_graph['note'].x.grad
-                for note in range(len(grad)):
-                    for feature_g in grad[note]:
-                        if feature_g != 0.0:
-                            computation_notes.append(note)
-                        break # to avoid adding the same note multiple times.
+                # One line replacement for the below loop code segment
+                new_notes = torch.nonzero(torch.any(grad != 0.0, dim=1), as_tuple=True)[0].tolist()
+                computation_notes += new_notes
+                # # 
+                # for note in range(len(grad)):
+                #     for feature_g in grad[note]:
+                #         if feature_g != 0.0:
+                #             computation_notes.append(note)
+                #         break # to avoid adding the same note multiple times.
 
-            elif isinstance(target, tuple):
-                target_mask = torch.tensor([(i == target[0]) or (i == target[1]) for i in range(len(base_graph['note'].x))])
-                toy_ground_truth = torch.tensor([0 for i in range(base_graph.num_edges)])
+            elif isinstance(target, tuple):                
+                target_mask = torch.zeros(len(base_graph['note'].x), dtype=torch.bool, device=device)
+                target_mask[target[0]] = True
+                target_mask[target[1]] = True
+                toy_ground_truth = torch.zeros(base_graph.num_edges, dtype=torch.long, device=device)
                 loss = toy_loss(pred[target_mask], toy_ground_truth[target_mask])
                 loss.backward()
 
@@ -157,15 +164,17 @@ class MNExplainer(ExplainerAlgorithm):
             base_graph['note'].x.requires_grad = False
 
         changes = [None]
+        dist = [0]
 
         if isinstance(num_expl, int):
             for _ in tqdm(range(1,num_expl + 1)):
-                self._train(self.mnmodel, self.model, base_graph, graph, computation_notes, desired_classification, changes, target=target, forbidden_op=forbidden_op, **kwargs)
-                noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
+                self._train(self.mnmodel, self.model, base_graph, input_graph, computation_notes, desired_classification, changes, target=target, forbidden_op=forbidden_op, **kwargs)
+                noisy_x_dict, noisy_edge_index_dict, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
                     base_graph.edge_index_dict,
-                    base_graph['note'].ts_beats,
                     base_graph['note'].divs_pq,
+                    base_graph['note'].beats,
+                    base_graph['note'].beat_type,
                     base_graph['note'].onset_div,
                     base_graph['note'].duration_div,
                     not_removed_notes,
@@ -173,7 +182,7 @@ class MNExplainer(ExplainerAlgorithm):
                     target=target,
                     forbidden_op=forbidden_op
                 )
-                
+
                 changes.append(noise)
 
                 noisy_graph = HeteroData()
@@ -183,8 +192,9 @@ class MNExplainer(ExplainerAlgorithm):
                     noisy_graph[node_type].x = tensor
                 noisy_graph['note'].onset_div = noisy_onset_div
                 noisy_graph['note'].duration_div = noisy_duration_div
-                noisy_graph['note'].ts_beats = noisy_ts_beats
                 noisy_graph['note'].divs_pq = base_graph['note'].divs_pq
+                noisy_graph['note'].beats = base_graph['note'].beats
+                noisy_graph['note'].beat_type = base_graph['note'].beat_type
                 # noisy_graph.x_dict = noisy_x_dict
                 # noisy_graph.edge_index_dict = noisy_edge_index_dict
                 noisy_graph.to(device)
@@ -194,14 +204,20 @@ class MNExplainer(ExplainerAlgorithm):
                 # print(self.model(noisy_x_dict, noisy_edge_index_dict, **kwargs).argmax(dim=1)[target])
                 # print('original graph prediction :')
                 # print(self.model(explanations[0].x_dict, explanations[0].edge_index_dict, **kwargs).argmax(dim=1)[target])
+                
+                if retrieve_dist:
+                    d = self._dist_from_change(changes, noisy_graph, input_graph, computation_notes)
+                    dist.append(d)
+
         else:
             for _, operation in tqdm(enumerate(num_expl)):
-                self._train(self.mnmodel, self.model, base_graph, graph, computation_notes, desired_classification, changes, target=target, operation=operation, forbidden_op=forbidden_op, **kwargs)
-                noisy_x_dict, noisy_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
+                self._train(self.mnmodel, self.model, base_graph, input_graph, computation_notes, desired_classification, changes, target=target, operation=operation, forbidden_op=forbidden_op, **kwargs)
+                noisy_x_dict, noisy_edge_index_dict, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
                     base_graph.edge_index_dict,
-                    base_graph['note'].ts_beats,
                     base_graph['note'].divs_pq,
+                    base_graph['note'].beats,
+                    base_graph['note'].beat_type,
                     base_graph['note'].onset_div,
                     base_graph['note'].duration_div,
                     not_removed_notes,
@@ -220,8 +236,9 @@ class MNExplainer(ExplainerAlgorithm):
                     noisy_graph[node_type].x = tensor
                 noisy_graph['note'].onset_div = noisy_onset_div
                 noisy_graph['note'].duration_div = noisy_duration_div
-                noisy_graph['note'].ts_beats = noisy_ts_beats
                 noisy_graph['note'].divs_pq = base_graph['note'].divs_pq
+                noisy_graph['note'].beats = base_graph['note'].beats
+                noisy_graph['note'].beat_type = base_graph['note'].beat_type
                 # noisy_graph.x_dict = noisy_x_dict
                 # noisy_graph.edge_index_dict = noisy_edge_index_dict
                 noisy_graph.to(device)
@@ -232,24 +249,35 @@ class MNExplainer(ExplainerAlgorithm):
                 # print('original graph prediction :')
                 # print(self.model(explanations[0].x_dict, explanations[0].edge_index_dict, **kwargs).argmax(dim=1)[target])
 
-        if retrieve_changes:
+                if retrieve_dist:
+                    d = self._dist_from_change(changes, noisy_graph, graph, computation_notes)
+                    dist.append(d)
+
+        if retrieve_changes and not retrieve_dist:
             return explanations, changes
-        
+        elif retrieve_dist and not retrieve_changes:
+            return explanations, dist
+        elif retrieve_dist and retrieve_changes:
+            return explanations, changes, dist
+                
         return explanations
     
     def _train(self, mnmodel, model, graph, input_graph, computation_notes, desired_classification, changes, target=None, operation='model_choice', forbidden_op=[], **kwargs):
 
         optimizer = torch.optim.Adam(mnmodel.parameters(), lr=self.lr, weight_decay=0.0005)
         device = graph.x_dict['note'].device
-        not_removed_notes = [True for i in range(len(graph['note'].x))]# torch.tensor([True for i in range(len(graph['note'].x))], device=device)
+        # not_removed_notes = [True for i in range(len(graph['note'].x))]# torch.tensor([True for i in range(len(graph['note'].x))], device=device)
+        not_removed_notes = torch.ones(len(graph['note'].x), dtype=torch.bool, device=device).tolist()
+        x_dict = graph.x_dict
         for _ in tqdm(range(1, self.epochs + 1)):
             mnmodel.train()
             optimizer.zero_grad()
-            noisy_x_dict, noisy_edge_index_dict, _, _, _, change = self.mnmodel(
-                    graph.x_dict,
+            noisy_x_dict, noisy_edge_index_dict, noisy_onset_div, noisy_duration_div, change = self.mnmodel(
+                    x_dict,
                     graph.edge_index_dict,
-                    graph['note'].ts_beats,
                     graph['note'].divs_pq,
+                    graph['note'].beats,
+                    graph['note'].beat_type,
                     graph['note'].onset_div,
                     graph['note'].duration_div,
                     not_removed_notes,
@@ -259,6 +287,18 @@ class MNExplainer(ExplainerAlgorithm):
                     forbidden_op=forbidden_op,
                     in_training=True
                 )
+            
+            noisy_training_graph = HeteroData()
+            for tuple, tensor in noisy_edge_index_dict.items():
+                noisy_training_graph[tuple].edge_index = tensor
+            for node_type, tensor in noisy_x_dict.items():
+                noisy_training_graph[node_type].x = tensor
+            noisy_training_graph['note'].onset_div = noisy_onset_div
+            noisy_training_graph['note'].duration_div = noisy_duration_div
+            noisy_training_graph['note'].divs_pq = graph['note'].divs_pq
+            noisy_training_graph['note'].beats = graph['note'].beats
+            noisy_training_graph['note'].beat_type = graph['note'].beat_type
+            noisy_training_graph.to(device)
             """
             if isinstance(target, int):
                 pred = model(noisy_x_dict, noisy_edge_index_dict, **kwargs)[target]
@@ -284,8 +324,8 @@ class MNExplainer(ExplainerAlgorithm):
                 assert False, 'the target is not recognized as a node index, nor an edge tuple, nor is None for graph classification.'
             """
             pred = model(noisy_x_dict, noisy_edge_index_dict, **kwargs)
-            original_pred = model(graph.x_dict, graph.edge_index_dict, **kwargs)
-            loss = self._loss(change, changes, pred, original_pred, graph, input_graph, computation_notes, target, desired_classification, self.balance_factor)
+            original_pred = model(input_graph.x_dict, input_graph.edge_index_dict, **kwargs)
+            loss = self._loss(change, changes, pred, original_pred, noisy_training_graph, input_graph, computation_notes, target, desired_classification, self.balance_factor)
             # print(f'Loss : {loss}')
             loss.backward()
             optimizer.step()
@@ -305,12 +345,19 @@ class MNExplainer(ExplainerAlgorithm):
                 return 0.2
         return 0
     
-    def _dist_from_change(self, changes, graph, input_graph, computation_notes, balance_nodes=0.1, balance_graph=0.1):
+    def _dist_from_change(self, changes, graph, input_graph, computation_notes, balance_nodes=0.01, balance_graph=0.01):
         dnodes = 0
         dgraph = 0
         computation_notes.sort()
-        computation_notes_mask_i = torch.tensor([i in computation_notes for i in range(len(input_graph.x_dict['note']))])
-        computation_notes_mask_n = torch.tensor([i in computation_notes for i in range(len(graph.x_dict['note']))])
+        computation_notes_tensor = torch.tensor(computation_notes, device=input_graph.x_dict['note'].device)
+        computation_notes_mask_i = torch.zeros(len(input_graph.x_dict['note']), dtype=torch.bool, device=input_graph.x_dict['note'].device)        
+        computation_notes_mask_i[computation_notes_tensor[computation_notes_tensor < len(input_graph.x_dict['note'])]] = True
+
+        computation_notes_mask_n = torch.zeros(len(graph.x_dict['note']), dtype=torch.bool, device=graph.x_dict['note'].device)
+        computation_notes_mask_n[computation_notes_tensor[computation_notes_tensor < len(graph.x_dict['note'])]] = True
+        # Previous code to compute the mask for the computation notes
+        # computation_notes_mask_i = torch.tensor([i in computation_notes for i in range(len(input_graph.x_dict['note']))])
+        # computation_notes_mask_n = torch.tensor([i in computation_notes for i in range(len(graph.x_dict['note']))])
 
         # computing Manhattan distance between the input and the explanation computation subgraphs
         dnodes = torch.sum(torch.abs(input_graph.x_dict['note'][computation_notes_mask_i] - graph.x_dict['note'][computation_notes_mask_n]))
@@ -380,12 +427,18 @@ class MNExplainer(ExplainerAlgorithm):
         desired_pred[target] = desired_classification
         # we apply a mask so only the prediction for the target is taken into account
         n_notes = len(desired_pred)
-        if change.operation == 'add':
-            n_notes += 1
-            desired_pred = torch.cat((desired_pred, torch.tensor([0], device=desired_pred.device)))
-            # we put 0 as a desired classification for the new note because we won't look at it anyways
-
-        target_mask = torch.tensor([i == target for i in range(n_notes)])
+        training_changes = copy.deepcopy(changes)
+        training_changes.append(change)
+        for chg in training_changes[1:]:
+            if chg.operation == 'add':
+                n_notes += 1
+                desired_pred = torch.cat((desired_pred, torch.tensor([0], device=desired_pred.device)))
+                # we put 0 as a desired classification for the new notes.
+                # Since they are never targetted, the desired label for them won't matter.
+        
+        # improved version of target_mask 
+        target_mask = torch.zeros(n_notes, dtype=torch.bool, device=desired_pred.device)
+        target_mask[target] = True
         #d = self._dist_from_change_naive(change, graph)
         #for chg in changes:
         #    if chg != None:
@@ -393,9 +446,6 @@ class MNExplainer(ExplainerAlgorithm):
 
         # print(f'classification sans changement{original_pred.argmax(dim=1)[target]}')
         # print(f'classification avec changement{pred.argmax(dim=1)[target]}')
-
-        training_changes = copy.deepcopy(changes)
-        training_changes.append(change)
 
         d = self._dist_from_change(training_changes, graph, input_graph, computation_notes)
 
@@ -468,8 +518,9 @@ class MNModel_(torch.nn.Module):
     def forward(self,
                 x_dict,
                 edge_index_dict,
-                ts_beats,
                 divs_pq,
+                beats,
+                beat_type,
                 onset_div,
                 duration_div,
                 not_removed_notes,
@@ -487,7 +538,9 @@ class MNModel_(torch.nn.Module):
             operation = possible_operations[op_idx]
 
         computation_notes.sort()
-        computation_notes_mask = torch.tensor([i in computation_notes for i in range(len(x_dict['note']))])
+        # computation_notes_mask = torch.tensor([i in computation_notes for i in range(len(x_dict['note']))])
+        # improved version of the computation notes mask        
+        computation_notes_mask = torch.isin(torch.arange(len(x_dict['note']), device=x_dict['note'].device), torch.tensor(computation_notes, device=x_dict['note'].device))
 
         match operation:
             case 'pitch':
@@ -507,7 +560,7 @@ class MNModel_(torch.nn.Module):
 
                 update = Change_('pitch', note_index=note_index, pitch=new_pitch, spelling=new_pitch_spelling)
 
-                return new_x_dict, new_edge_index_dict, ts_beats, onset_div, duration_div, update
+                return new_x_dict, new_edge_index_dict, onset_div, duration_div, update
             
             case 'onset':
                 # We select two notes from the computing nodes : the first one will have its onset adjusted to the onset of the second one.
@@ -518,14 +571,14 @@ class MNModel_(torch.nn.Module):
                 computation_notes_scores_onset = torch.sum(embeddings_for_new_onset['note'], dim=1)[computation_notes_mask]
                 new_onset_note = computation_notes[torch.argmax(computation_notes_scores_onset)]
                 new_onset = onset_div[new_onset_note]
+                new_onset_beat = (new_onset / divs_pq[0]) * (beat_type[0]/4)
             
-                new_edge_index_dict, noisy_onset_div, removed_edges, added_edges = self._update_onset(
-                    new_onset, note_index, onset_div, duration_div, edge_index_dict, not_removed_notes)
-                new_x_dict = dict(x_dict)
+                new_x_dict, new_edge_index_dict, noisy_onset_div, removed_edges, added_edges = self._update_onset(
+                    new_onset, new_onset_beat, note_index, beats, onset_div, duration_div, x_dict, edge_index_dict, not_removed_notes)
                 
                 update = Change_('onset', note_index=note_index, onset=new_onset, removed_edges=removed_edges, added_edges=added_edges)
 
-                return new_x_dict, new_edge_index_dict, ts_beats, noisy_onset_div, duration_div, update
+                return new_x_dict, new_edge_index_dict, noisy_onset_div, duration_div, update
 
             case 'duration':
                 # We choose a note in the computation nodes that will have its duration modified. The new duration is chosen among full, half,
@@ -536,13 +589,14 @@ class MNModel_(torch.nn.Module):
                 embeddings_for_new_duration = self.duration_change_modules['duration'](x_dict, edge_index_dict)
                 new_duration = (1 + torch.argmax(embeddings_for_new_duration['note'][note_index])) * divs_pq[0]/2
                 # look at how are the duration computed to find the multiplier.
+                new_duration_beat = (new_duration / divs_pq[0]) * (beat_type[0]/4)
 
                 new_x_dict, new_edge_index_dict, noisy_duration_div, removed_edges, added_edges = self._update_duration(
-                    new_duration, note_index, ts_beats, onset_div, duration_div, x_dict, edge_index_dict, not_removed_notes)
+                    new_duration, new_duration_beat, beats, note_index, onset_div, duration_div, x_dict, edge_index_dict, not_removed_notes)
                 
                 update = Change_('duration', note_index=note_index, duration=new_duration, removed_edges=removed_edges, added_edges=added_edges)
 
-                return new_x_dict, new_edge_index_dict, ts_beats, onset_div, noisy_duration_div, update
+                return new_x_dict, new_edge_index_dict, onset_div, noisy_duration_div, update
             
             case 'add':
                 embeddings_for_new_note_onset = self.add_note_modules['onset'](x_dict, edge_index_dict)
@@ -564,12 +618,14 @@ class MNModel_(torch.nn.Module):
                     note_index = target
                     new_note_pitch_spelling_encoding = torch.argmax(embeddings_for_new_note_pitch_spelling['note'][note_index])
                     new_note_pitch_spelling = self.pitchencoder.classes_[new_note_pitch_spelling_encoding]
-                    new_note_pitch = self.pitchencoder.SPELLING_TO_PC(new_note_pitch_spelling)
+                    new_note_pitch = self.pitchencoder.SPELLING_TO_PC[new_note_pitch_spelling]
                     new_note_octave = torch.argmax(embeddings_for_new_note_octave['note'][note_index])
                     computation_notes_scores_onset = torch.sum(embeddings_for_new_note_onset['note'], dim=1)[computation_notes_mask]
                     onset_note = computation_notes[torch.argmax(computation_notes_scores_onset)]
                     new_note_onset = torch.tensor(onset_div[onset_note], device='cpu') #can cause some warnings if some operations occured before because onset_div then becomes a tensor.
                     new_note_duration = int((1 + torch.argmax(embeddings_for_new_note_duration['note'][note_index])) * divs_pq[0]/2)
+                    new_note_onset_beat = (new_note_onset / divs_pq[0]) * (beat_type[0]/4)
+                    new_note_duration_beat = (new_note_duration / divs_pq[0]) * (beat_type[0]/4)
 
                 elif isinstance(target, tuple):
                     # OUTDATED CODE
@@ -590,26 +646,26 @@ class MNModel_(torch.nn.Module):
                 feature_vector = torch.zeros(1, self.num_feat, device=x_dict['note'].device, requires_grad=False)
                 feature_vector[0,3+new_note_pitch] = 1.0
                 feature_vector[0,15+new_note_octave] = 1.0
-                feature_vector[0,0] = 1 - tanh(new_note_duration/ts_beats[0])
-                # TODO : calculer les deux autres features correctement
-                not_removed_notes.append(True)
+                feature_vector[0,0] = 1 - tanh(new_note_duration_beat/beats[0])
+                feature_vector[0,1] = (new_note_onset_beat%beats[0])/beats[0]
+                feature_vector[0,2] = float(new_note_onset_beat%1 == 0)
+               
                 # note : we assumed here that the time signature beats is always the same in the graph. If it is not the case, we have
                 # to find a note (maybe near the new note onset) that would in theory share the time signature beats ?
                 # in the worse case, we can also just keep a random time signature beats and let the model adapt the duration
                 # prediction to make sense.
 
-                new_x_dict, new_edge_index_dict, noisy_onset_div, noisy_duration_div, removed_edges, added_edges = self._add_note(
+                not_removed_notes.append(True)
+
+                new_x_dict, new_edge_index_dict, noisy_onset_div, noisy_duration_div, removed_edges, added_edges, index = self._add_note(
                     x_dict, edge_index_dict, new_note_onset, new_note_duration,
                     onset_div, duration_div, feature_vector, new_note_pitch_spelling_encoding, not_removed_notes)
 
-                try:
-                    ts_beats.to(x_dict['note'].device)
-                except:
-                    ts_beats = torch.tensor(ts_beats, device=x_dict['note'].device)
-                noisy_ts_beats = torch.cat((ts_beats, torch.tensor([0],device=x_dict['note'].device)))
+                if in_training:
+                    _ = not_removed_notes.pop()
 
                 update = Change_('add',
-                                 note_index=len(not_removed_notes)-1, 
+                                 note_index=index, 
                                  pitch=new_note_pitch, 
                                  octave=new_note_octave, 
                                  onset=new_note_onset, 
@@ -618,7 +674,7 @@ class MNModel_(torch.nn.Module):
                                  removed_edges=removed_edges, 
                                  added_edges=added_edges)
 
-                return new_x_dict, new_edge_index_dict, noisy_ts_beats, noisy_onset_div, noisy_duration_div, update
+                return new_x_dict, new_edge_index_dict, noisy_onset_div, noisy_duration_div, update
 
             case 'remove':
                 # We select a note from the computation nodes and we isolate it in the score graph so it is no longer relevant for the message
@@ -627,14 +683,18 @@ class MNModel_(torch.nn.Module):
                 computation_notes_scores = torch.sum(embeddings_for_note_index['note'], dim=1)[computation_notes_mask]
                 note_index = computation_notes[torch.argmax(computation_notes_scores)]
 
-                if not in_training:
-                    not_removed_notes[note_index] = False
+                
+                not_removed_notes[note_index] = False
+
                 new_edge_index_dict, removed_edges, added_edges = self._remove_note(edge_index_dict, note_index, onset_div, duration_div, not_removed_notes)
                 new_x_dict = dict(x_dict)
                 
+                if in_training:
+                    not_removed_notes[note_index] = True
+
                 update = Change_('remove', note_index=note_index, removed_edges=removed_edges, added_edges=added_edges)
 
-                return new_x_dict, new_edge_index_dict, ts_beats, onset_div, duration_div, update
+                return new_x_dict, new_edge_index_dict, onset_div, duration_div, update
             
             case _:
                 assert False, 'The operation provided is not implemented. Please provide an operation that is either remove, add, onset, duration or pitch.'
@@ -644,9 +704,10 @@ class MNModel_(torch.nn.Module):
         device = x_dict['note'].device
         new_note_index = len(x_dict['note'])
         new_x_dict = dict(x_dict)
-        new_x_dict['note'] = torch.cat((x_dict['note'], feature_vector),0)
+        new_x_dict['note'] = torch.cat((new_x_dict['note'], feature_vector),0)
+        index = len(new_x_dict['note'])-1
         try:
-            new_x_dict['pitch_spelling'] = torch.cat((x_dict['pitch_spelling'].clone(), torch.tensor([pitch_spelling], device=device, dtype=int)), dim=-1)
+            new_x_dict['pitch_spelling'] = torch.cat((new_x_dict['pitch_spelling'].clone(), torch.tensor([pitch_spelling], device=device, dtype=int)), dim=-1)
         except:
             pass
             # pitch spelling not supported for this model
@@ -660,7 +721,7 @@ class MNModel_(torch.nn.Module):
         new_edge_index_dict, removed_edges, added_edges = self._recompute_edge_dict(
             edge_index_dict, new_note_index, onset, duration, noisy_onset_div, noisy_duration_div, not_removed_notes, remove_previous=False)
 
-        return new_x_dict, new_edge_index_dict, noisy_onset_div, noisy_duration_div, removed_edges, added_edges
+        return new_x_dict, new_edge_index_dict, noisy_onset_div, noisy_duration_div, removed_edges, added_edges, index
     
     def _remove_note(self, edge_index_dict, note_index, onset_div, duration_div, not_removed_notes, recompute_rest=True): 
         # in order not to mess up the nodes indices in the edge tensors, we keep the note in x_dict, but we isolate
@@ -777,21 +838,25 @@ class MNModel_(torch.nn.Module):
         
         return new_x_dict
     
-    def _update_onset(self, onset, note_index, onset_div, duration_div, edge_index_dict, not_removed_notes):
+    def _update_onset(self, onset, onset_beat, note_index, beats, onset_div, duration_div, x_dict, edge_index_dict, not_removed_notes):
         noisy_onset_div = copy.deepcopy(onset_div)
         noisy_onset_div[note_index] = onset
+
+        new_x_dict = dict(x_dict)
+        new_x_dict['note'][note_index][1] = (onset_beat%beats[0])/beats[0]
+        new_x_dict['note'][note_index][2] = float(onset_beat%1 == 0)
 
         new_edge_index_dict, removed_edges, added_edges = self._recompute_edge_dict(
             edge_index_dict, note_index, int(onset), int(duration_div[note_index]), noisy_onset_div, duration_div, not_removed_notes)
 
-        return new_edge_index_dict, noisy_onset_div, removed_edges, added_edges
+        return new_x_dict, new_edge_index_dict, noisy_onset_div, removed_edges, added_edges
     
-    def _update_duration(self, duration, note_index, ts_beats, onset_div, duration_div, x_dict, edge_index_dict, not_removed_notes):
+    def _update_duration(self, duration, duration_beat, beats, note_index, onset_div, duration_div, x_dict, edge_index_dict, not_removed_notes):
         noisy_duration_div = copy.deepcopy(duration_div)
         noisy_duration_div[note_index] = duration
 
         new_x_dict = dict(x_dict)
-        new_x_dict['note'][note_index][0] = 1-tanh(duration/ts_beats[note_index])
+        new_x_dict['note'][note_index][0] = 1-tanh(duration_beat/beats[0])
 
         new_edge_index_dict, removed_edges, added_edges = self._recompute_edge_dict(
             edge_index_dict, note_index, int(onset_div[note_index]), int(duration), onset_div, noisy_duration_div, not_removed_notes)
