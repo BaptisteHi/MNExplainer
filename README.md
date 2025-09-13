@@ -9,7 +9,7 @@ To use this repository, one can simply install the repo, and create an instance 
 
 If you use our tool, please cite:
 
-```
+```tex
 @inproceedings{hilaire2025museexplainer,
     title={MUSE-Explainer : Counterfactual explanations for Symbolic Music Graph classification models},
     author={Hilaire, Baptiste and Karystinaios, Emmanouil and Widmer, Gerhard},
