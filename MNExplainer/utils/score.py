@@ -207,6 +207,7 @@ def update_score(score, change, score_indices, current_next_available) -> scr.Sc
             assert False, 'the change does not correspond to a well known operation'
 
 def visualize_explanation_files(score, graph, pitch_encoder, target, explainer, num_expl, desired_classification, path='./explain_files/', score_name = 'score', device='cpu', ret_time=False):
+
     """
     Produce the files for visualizing the num_expl explanations produced by the provided explainer on the prediction associated
     with the given target and made by the GNN model associated with the explainer.
@@ -229,10 +230,12 @@ def visualize_explanation_files(score, graph, pitch_encoder, target, explainer, 
     device (optional) : string
         the device of the explained model, so the graph produced can be moved accordingly
     """
+
     ids = graph['note'].id.tolist()
     t_start = time.time()
     explanation, changes, dist = explainer(graph, desired_classification, target=target, num_expl=num_expl, retrieve_changes=True, retrieve_dist=True)
     t_end = time.time()
+
     current_next_available = None
     graph.to('cpu')
     for i,graphexp in enumerate(explanation):
@@ -242,7 +245,7 @@ def visualize_explanation_files(score, graph, pitch_encoder, target, explainer, 
         d = dist[i]
         print(change)
         print(f"Distance from input graph for this explanation : {d}")
-        
+
         if change == None:
             pass
         else:

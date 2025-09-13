@@ -168,6 +168,7 @@ class MNExplainer(ExplainerAlgorithm):
 
         if isinstance(num_expl, int):
             for _ in tqdm(range(1,num_expl + 1)):
+              
                 self._train(self.mnmodel, self.model, base_graph, input_graph, computation_notes, desired_classification, changes, target=target, forbidden_op=forbidden_op, **kwargs)
                 noisy_x_dict, noisy_edge_index_dict, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
@@ -206,12 +207,16 @@ class MNExplainer(ExplainerAlgorithm):
                 # print(self.model(explanations[0].x_dict, explanations[0].edge_index_dict, **kwargs).argmax(dim=1)[target])
                 
                 if retrieve_dist:
+
                     d = self._dist_from_change(changes, noisy_graph, input_graph, computation_notes)
+
                     dist.append(d)
 
         else:
             for _, operation in tqdm(enumerate(num_expl)):
+
                 self._train(self.mnmodel, self.model, base_graph, input_graph, computation_notes, desired_classification, changes, target=target, operation=operation, forbidden_op=forbidden_op, **kwargs)
+
                 noisy_x_dict, noisy_edge_index_dict, noisy_onset_div, noisy_duration_div, noise = self.mnmodel(
                     base_graph.x_dict,
                     base_graph.edge_index_dict,
@@ -704,10 +709,12 @@ class MNModel_(torch.nn.Module):
         device = x_dict['note'].device
         new_note_index = len(x_dict['note'])
         new_x_dict = dict(x_dict)
+
         new_x_dict['note'] = torch.cat((new_x_dict['note'], feature_vector),0)
         index = len(new_x_dict['note'])-1
         try:
             new_x_dict['pitch_spelling'] = torch.cat((new_x_dict['pitch_spelling'].clone(), torch.tensor([pitch_spelling], device=device, dtype=int)), dim=-1)
+
         except:
             pass
             # pitch spelling not supported for this model
