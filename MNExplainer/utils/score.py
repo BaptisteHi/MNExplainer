@@ -1,6 +1,7 @@
 import partitura.score as scr
 import partitura as pt
 from utils.graph import save_pyg_graph_as_json, create_graph_for_score
+import time
 
 def _spelling_from_midi_pitch(pitch):
     match pitch:
@@ -205,7 +206,8 @@ def update_score(score, change, score_indices, current_next_available) -> scr.Sc
         case _:
             assert False, 'the change does not correspond to a well known operation'
 
-def visualize_explanation_files(score, pitch_encoder, target, explainer, num_expl, desired_classification, path='./explain_files/', score_name = 'score', device='cpu'):
+def visualize_explanation_files(score, graph, pitch_encoder, target, explainer, num_expl, desired_classification, path='./explain_files/', score_name = 'score', device='cpu', ret_time=False):
+
     """
     Produce the files for visualizing the num_expl explanations produced by the provided explainer on the prediction associated
     with the given target and made by the GNN model associated with the explainer.
@@ -228,10 +230,12 @@ def visualize_explanation_files(score, pitch_encoder, target, explainer, num_exp
     device (optional) : string
         the device of the explained model, so the graph produced can be moved accordingly
     """
-    graph, _ = create_graph_for_score(score, pitch_encoder, include_cadence=True, include_id=True, include_ts=True, include_divs_pq=True)
-    graph.to(device)
+
     ids = graph['note'].id.tolist()
+    t_start = time.time()
     explanation, changes, dist = explainer(graph, desired_classification, target=target, num_expl=num_expl, retrieve_changes=True, retrieve_dist=True)
+    t_end = time.time()
+
     current_next_available = None
     graph.to('cpu')
     for i,graphexp in enumerate(explanation):
@@ -241,8 +245,9 @@ def visualize_explanation_files(score, pitch_encoder, target, explainer, num_exp
         d = dist[i]
         print(change)
         print(f"Distance from input graph for this explanation : {d}")
+
         if change == None:
-            continue
+            pass
         else:
             current_next_available = update_score(score, change, ids, current_next_available)
             pt.save_mei(score, path + score_name + '_' +  str(i) + 'changes.mei')
@@ -252,5 +257,10 @@ def visualize_explanation_files(score, pitch_encoder, target, explainer, num_exp
         indexation = {}
         indexation['id'] = {i : ids[i] for i in range(len(ids))}
         save_pyg_graph_as_json(graphexp, ids, name, extra_info=indexation, path = path)
+        
     
-    return explanation, changes
+    if ret_time:
+        time_elapsed = t_end - t_start
+        return explanation, changes, dist, time_elapsed
+
+    return explanation, changes, dist
