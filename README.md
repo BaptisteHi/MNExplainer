@@ -15,6 +15,7 @@ The ```__main__.py``` file showcases an exemple of using the repo to create an e
 
 This repository requieres the following libraries to be installed in your environment :
 
+```
 -tqdm
 -torch
 -numpy
@@ -22,6 +23,7 @@ This repository requieres the following libraries to be installed in your enviro
 -graphmuse
 -partitura
 -struttura
+```
 
 ## Citation
 
